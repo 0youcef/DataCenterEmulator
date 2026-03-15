@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+venv/
+env/
+.venv/
+
+.env
+*.env
+
+
+*.qcow2
+*.iso
+*.pcap
+*.bin
