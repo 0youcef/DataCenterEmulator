@@ -10,9 +10,9 @@ Automated deployment and configuration of a spine-leaf data center topology in G
 .
 ├── config.py               # Single source of truth — edit this file only
 ├── gns3.py                 # GNS3 API client library
-├── deploy.py               # Deploy the initial topology
+├── deploy_fabric.py        # Deploy the initial topology
 ├── add_node.py             # Add nodes to a running topology
-├── config_switches.py   # Configure switches via Telnet (Netmiko)
+├── config_switches.py      # Configure switches via Telnet (Netmiko)
 └── ansible/
     ├── inventory.py        # Dynamic Ansible inventory (reads config.py)
     └── playbook.yml        # Ansible playbook for switch configuration
@@ -37,7 +37,7 @@ ansible-galaxy collection install arista.eos
 # Management bridge (persistent)
 sudo ip link add br0 type bridge
 sudo ip link set br0 up
-sudo ip addr add 192.168.100.1/24 dev br0
+sudo ip addr add 172.20.20.1/24 dev br0
 
 # ubridge permissions (required for GNS3 TAP devices)
 sudo setcap cap_net_admin,cap_net_raw=eip /usr/bin/ubridge
@@ -60,6 +60,7 @@ Two templates must exist in GNS3 before deploying:
 - NICs: `e1000e`, 4 adapters
 - QEMU options: `-machine q35 -enable-kvm -cpu host -smp 4 -usb -device usb-tablet`
 - Enable "Use as a linked base VM"
+- Enable "Enable the UEFI boot mode"
 
 ### Preparing the ESXi image
 
@@ -135,11 +136,7 @@ COMPUTE_LEAF   = "local"
 COMPUTE_SERVER = "PC"       # name of a registered remote compute
 ```
 
-All compute machines need the same images in `~/GNS3/images/QEMU/`. Using a shared NFS mount avoids duplication:
-
-```bash
-mount <controller-ip>:/home/user/GNS3/images /home/pc/GNS3/images
-```
+All compute machines need the same images in `~/GNS3/images/QEMU/`.
 
 ---
 
@@ -148,7 +145,7 @@ mount <controller-ip>:/home/user/GNS3/images /home/pc/GNS3/images
 ### 1. Deploy the topology
 
 ```bash
-python deploy.py
+python deploy_fabric.py
 ```
 
 This creates the GNS3 project, spawns all nodes, wires the spine-leaf fabric, connects everything to a management switch bridged to `br0`, and starts all nodes. The script waits for a keypress before closing the project.
@@ -246,47 +243,3 @@ gns3 = GNS3Client(server, user, password)
 | `create_link(project_id, node_a, adapter_a, node_b, adapter_b, port_a, port_b)` | Wire two nodes |
 
 **Note on ethernet switches:** switches use `adapter_number=0, port_number=N` — pass `port_a` or `port_b` when one end is a switch.
-
----
-
-## Troubleshooting
-
-**Port 53 already in use (dnsmasq)**
-```bash
-# disable systemd-resolved stub listener
-echo "DNSStubListener=no" | sudo tee -a /etc/systemd/resolved.conf
-sudo systemctl restart systemd-resolved
-```
-
-**GNS3 500 on project load (`TypeError: NoneType not iterable`)**
-A port in the project file has a null name. Patch `port.py`:
-```python
-# /usr/lib/python3.14/site-packages/gns3server/controller/ports/port.py
-@property
-def short_name(self):
-    if self._name is None:
-        return ""
-    elif "/" in self._name:
-    ...
-```
-Or fix the project file: `grep -n '"name": null' ~/GNS3/projects/*/*.gns3`
-
-**TAP device error on start**
-`br0` is down. Bring it up and ensure ubridge has capabilities:
-```bash
-sudo ip link set br0 up
-sudo setcap cap_net_admin,cap_net_raw=eip /usr/bin/ubridge
-sudo systemctl restart gns3server
-```
-
-**SSH host key changed after redeployment**
-```bash
-ssh-keygen -R <switch-ip>
-# or disable checking for the lab subnet in ~/.ssh/config:
-# Host 192.168.100.*
-#     StrictHostKeyChecking no
-#     UserKnownHostsFile /dev/null
-```
-
-**vEOS console: `[Agent ar.Aaa not responding]`**
-Not an error — AAA service is still initializing. Wait for the prompt to return cleanly (no warnings) then log in with `admin` and no password.
