@@ -82,13 +82,13 @@ def configure_switch(name, mgmt_ip, console_port):
         with ConnectHandler(**device) as conn:
             conn.enable()
             commands = [
-                "zerotouch disable"
                 f"hostname {name}",
+                "zerotouch disable"
+                "ip routing",
                 "interface Management1",
                 f"ip address {mgmt_ip}/24",
                 "no shutdown",
                 "exit",           # explicitly exit interface context
-                "ip routing",
                 "management api http-commands",
                 "no shutdown",
                 "protocol https",

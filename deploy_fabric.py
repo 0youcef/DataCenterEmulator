@@ -21,10 +21,12 @@ try:
     print(f"Opening project: {PROJECT_NAME}...")
     project = gns3.create_project(PROJECT_NAME)
     if project is None:
-        print(f"Project '{PROJECT_NAME}' already exists. Fetching ID...")
+        print(f"Project '{PROJECT_NAME}' already exists. Deleting and recreating...")
         projects = gns3.get_projects()
-        project_id = next(p['project_id'] for p in projects if p['name'] == PROJECT_NAME)
-        gns3.open_project(project_id)
+        old_id = next(p['project_id'] for p in projects if p['name'] == PROJECT_NAME)
+        gns3.delete_project(old_id)
+        project = gns3.create_project(PROJECT_NAME)
+        project_id = project['project_id']
     else:
         project_id = project['project_id']
     print(f"Project ID: {project_id}\n")
