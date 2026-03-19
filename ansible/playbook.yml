@@ -25,13 +25,6 @@
         lines:
           - "hostname {{ inventory_hostname }}"
 
-    - name: Configure management interface
-      arista.eos.eos_config:
-        lines:
-          - "ip address {{ ansible_host }}/24"
-          - no shutdown
-        parents: interface Management1
-
     - name: Enable IP routing
       arista.eos.eos_config:
         lines:

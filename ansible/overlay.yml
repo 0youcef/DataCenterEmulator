@@ -1,0 +1,147 @@
+---
+# ================================================================
+# SPINES — Route EVPN traffic via Loopbacks (eBGP Next-Hop Unchanged)
+# ================================================================
+- name: Configure EVPN on Spines
+  hosts: spines
+  gather_facts: no
+
+  tasks:
+    - name: Create EVPN Peer Group
+      arista.eos.eos_config:
+        lines:
+          - "neighbor EVPN-OVERLAY peer group"
+          - "neighbor EVPN-OVERLAY update-source Loopback0"
+          - "neighbor EVPN-OVERLAY ebgp-multihop 3"
+          - "neighbor EVPN-OVERLAY send-community"
+        parents: "router bgp {{ bgp_asn }}"
+
+    - name: Add Leaves to Peer Group via Loopback
+      arista.eos.eos_config:
+        lines:
+          - "neighbor {{ item.ip }} peer group EVPN-OVERLAY"
+          - "neighbor {{ item.ip }} remote-as {{ item.asn }}"
+        parents: "router bgp {{ bgp_asn }}"
+      loop: "{{ overlay_peers }}"
+
+    - name: Activate EVPN and preserve Next-Hop
+      arista.eos.eos_config:
+        lines:
+          - "neighbor EVPN-OVERLAY activate"
+          # Crucial for eBGP EVPN: Do not change next-hop to Spine IP!
+          - "neighbor EVPN-OVERLAY next-hop-unchanged" 
+        parents:
+          - "router bgp {{ bgp_asn }}"
+          - address-family evpn
+
+    - name: Save config
+      arista.eos.eos_command:
+        commands: write memory
+
+
+# ================================================================
+# LEAVES — VTEPs: VLANs, Vxlan1, EVPN Loopback Peers
+# ================================================================
+- name: Configure EVPN on Leaves (VTEPs)
+  hosts: leaves
+  gather_facts: no
+
+  tasks:
+    - name: Create VLANs
+      arista.eos.eos_config:
+        lines:
+          - "name {{ item.name }}"
+        parents: "vlan {{ item.vlan_id }}"
+      loop: "{{ vlans }}"
+
+    - name: Configure VXLAN interface
+      arista.eos.eos_config:
+        lines:
+          - "vxlan source-interface {{ vtep_loopback }}"
+          - "vxlan udp-port 4789" # FIXED: Arista specific requirement
+        parents: interface Vxlan1
+
+    - name: Map VLANs to VNIs
+      arista.eos.eos_config:
+        lines:
+          - "vxlan vlan {{ item.vlan_id }} vni {{ item.vni }}"
+        parents: interface Vxlan1
+      loop: "{{ vlans }}"
+
+    - name: Create EVPN Peer Group
+      arista.eos.eos_config:
+        lines:
+          - "neighbor EVPN-OVERLAY peer group"
+          - "neighbor EVPN-OVERLAY update-source Loopback0"
+          - "neighbor EVPN-OVERLAY ebgp-multihop 3"
+          - "neighbor EVPN-OVERLAY send-community"
+        parents: "router bgp {{ bgp_asn }}"
+
+    - name: Add Spines to Peer Group via Loopback
+      arista.eos.eos_config:
+        lines:
+          - "neighbor {{ item.ip }} peer group EVPN-OVERLAY"
+          - "neighbor {{ item.ip }} remote-as {{ item.asn }}"
+        parents: "router bgp {{ bgp_asn }}"
+      loop: "{{ overlay_peers }}"
+
+    - name: Activate EVPN address family
+      arista.eos.eos_config:
+        lines:
+          - "neighbor EVPN-OVERLAY activate"
+        parents:
+          - "router bgp {{ bgp_asn }}"
+          - address-family evpn
+
+    - name: Advertise VLANs into EVPN
+      arista.eos.eos_config:
+        lines:
+          - "rd auto"
+          - "route-target both {{ item.vni }}:{{ item.vni }}"
+          - "redistribute learned" # FIXED: Arista syntax
+        parents:
+          - "router bgp {{ bgp_asn }}"
+          - "vlan {{ item.vlan_id }}"
+      loop: "{{ vlans }}"
+
+    - name: Configure server-facing ports
+      arista.eos.eos_config:
+        lines:
+          - switchport mode access
+          - "switchport access vlan {{ vlans[0].vlan_id }}"
+          - no shutdown
+        parents: "interface {{ item }}"
+      loop: "{{ server_interfaces }}"
+
+    - name: Save config
+      arista.eos.eos_command:
+        commands: write memory
+
+
+# ================================================================
+# Verify
+# ================================================================
+- name: Verify overlay
+  hosts: switches
+  gather_facts: no
+
+  tasks:
+    - name: Show EVPN summary
+      arista.eos.eos_command:
+        commands: show bgp evpn summary
+      register: evpn_summary
+
+    - name: Print EVPN summary
+      debug:
+        msg: "{{ evpn_summary.stdout_lines[0] }}"
+
+    - name: Show VXLAN interface
+      arista.eos.eos_command:
+        commands: show interfaces Vxlan1
+      register: vxlan_iface
+      when: is_vtep
+
+    - name: Print VXLAN interface
+      debug:
+        msg: "{{ vxlan_iface.stdout_lines[0] }}"
+      when: is_vtep

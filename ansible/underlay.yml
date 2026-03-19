@@ -1,0 +1,95 @@
+---
+- name: Configure Underlay (Loopbacks + P2P Links + eBGP + ECMP)
+  hosts: switches
+  gather_facts: no
+
+  tasks:
+
+    # -------------------------------------------------------
+    # Loopback
+    # -------------------------------------------------------
+    - name: Configure Loopback0
+      arista.eos.eos_config:
+        lines:
+          - "ip address {{ loopback_ip }}/32"
+        parents: interface Loopback0
+
+    # -------------------------------------------------------
+    # P2P fabric interfaces
+    # -------------------------------------------------------
+    - name: Configure fabric interfaces
+      arista.eos.eos_config:
+        lines:
+          - "description P2P to {{ item.peer_name }}"
+          - no switchport
+          - "ip address {{ item.ip }}/31"
+          - no shutdown
+        parents: "interface {{ item.interface }}"
+      loop: "{{ fabric_interfaces }}"
+
+    # -------------------------------------------------------
+    # IP routing + ECMP
+    # -------------------------------------------------------
+    - name: Enable IP routing
+      arista.eos.eos_config:
+        lines:
+          - ip routing
+
+    - name: Enable maximum ECMP paths
+      arista.eos.eos_config:
+        lines:
+          - "maximum-paths {{ groups['spines'] | length if inventory_hostname in groups['leaves'] else groups['leaves'] | length }}"
+        parents: router bgp {{ bgp_asn }}
+
+    # -------------------------------------------------------
+    # eBGP
+    # -------------------------------------------------------
+    - name: Configure eBGP
+      arista.eos.eos_config:
+        lines:
+          - "router-id {{ loopback_ip }}"
+        parents: "router bgp {{ bgp_asn }}"
+
+    - name: Configure eBGP neighbors
+      arista.eos.eos_config:
+        lines:
+          - "neighbor {{ item.peer_ip }} remote-as {{ item.peer_asn }}"
+          - "neighbor {{ item.peer_ip }} description {{ item.peer_name }}"
+        parents: "router bgp {{ bgp_asn }}"
+      loop: "{{ fabric_interfaces }}"
+
+    - name: Activate neighbors in IPv4 unicast
+      arista.eos.eos_config:
+        lines:
+          - "neighbor {{ item.peer_ip }} activate"
+        parents:
+          - "router bgp {{ bgp_asn }}"
+          - address-family ipv4
+      loop: "{{ fabric_interfaces }}"
+
+    - name: Advertise loopback into BGP
+      arista.eos.eos_config:
+        lines:
+          - "network {{ loopback_ip }}/32"
+        parents:
+          - "router bgp {{ bgp_asn }}"
+          - address-family ipv4
+
+    # -------------------------------------------------------
+    # Save
+    # -------------------------------------------------------
+    - name: Save config
+      arista.eos.eos_command:
+        commands: write memory
+
+    # -------------------------------------------------------
+    # Verify
+    # -------------------------------------------------------
+    - name: Show BGP summary
+      arista.eos.eos_command:
+        commands: show bgp summary
+      register: bgp_summary
+
+    - name: Print BGP summary
+      debug:
+        msg: "{{ bgp_summary.stdout_lines[0] }}"
