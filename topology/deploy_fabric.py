@@ -1,6 +1,8 @@
 import sys
+import os
 from gns3 import GNS3Client
-from config import (
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from sots.config import (
     GNS3_SERVER, GNS3_USER, GNS3_PASSWORD,
     PROJECT_NAME, TEMPLATE_NAME_ARISTA, TEMPLATE_NAME_SERVER,
     NUM_SPINES, NUM_LEAVES, NUM_SERVERS,
