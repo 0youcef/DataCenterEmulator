@@ -2,8 +2,8 @@
 import json
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from config import (
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from sots.config import (
     NUM_SPINES, NUM_LEAVES, NUM_SERVERS,
     MGMT_BASE_IP, MGMT_START,
     SSH_USER, SSH_PASS,
@@ -11,7 +11,7 @@ from config import (
     SPINE_AS_BASE, LEAF_AS_BASE,
     UNDERLAY_LOOPBACK, VTEP_LOOPBACK, VTEP_SUBNET, VXLAN_INTERFACE,
 )
-from vlans import VLANS
+from sots.vlans import VLANS
 
 inventory = {
     "spines":   {"hosts": []},
