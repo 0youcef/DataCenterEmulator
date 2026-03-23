@@ -1,8 +1,40 @@
-# --- VLAN Source of Truth ---
-# Add a dict to provision a VLAN across the fabric.
-# Remove a dict to deprovision it (then run remove_vlans.yml).
-# vni must be unique per VLAN.
- 
+# sots/vlans.py
+
+# Define the Tenant VRFs and their dedicated L3 transit tunnels
+TENANTS = [
+    {
+        "name": "VRF_PEDAGOGY",
+        "l3_vni": 50010
+    },
+    {
+        "name": "VRF_RESEARCH",
+        "l3_vni": 50020
+    }
+]
+
+# Define the local subnets and map them to the Tenant VRFs
 VLANS = [
-    {"name": "tenant-1", "vlan_id": 10, "vni": 10010},
+    # Pedagogy Networks
+    {
+        "vlan_id": 10,
+        "name": "WEB_SERVERS",
+        "vni": 10010,
+        "vrf": "VRF_PEDAGOGY",
+        "anycast_ip": "192.168.10.1/24"
+    },
+    {
+        "vlan_id": 11,
+        "name": "DB_SERVERS",
+        "vni": 10011,
+        "vrf": "VRF_PEDAGOGY",
+        "anycast_ip": "192.168.11.1/24"
+    },
+    # Research Networks (Isolated)
+    {
+        "vlan_id": 20,
+        "name": "AI_CLUSTER",
+        "vni": 10020,
+        "vrf": "VRF_RESEARCH",
+        "anycast_ip": "192.168.20.1/24"
+    }
 ]

@@ -3,7 +3,10 @@ from netmiko.exceptions import NetMikoTimeoutException, NetMikoAuthenticationExc
 import requests
 import time
 import socket
-from config import (
+import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from sots.config import (
     GNS3_SERVER, GNS3_USER, GNS3_PASSWORD,
     PROJECT_NAME,
     NUM_SPINES, NUM_LEAVES,

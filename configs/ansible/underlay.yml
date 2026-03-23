@@ -1,39 +1,54 @@
 ---
-- name: Configure Underlay (Loopbacks + P2P Links + eBGP + ECMP)
+- name: Configure Enterprise Underlay (BFD + Peer Groups + Route Filtering)
   hosts: switches
   gather_facts: no
 
   tasks:
 
-    # -------------------------------------------------------
-    # Loopback (underlay BGP router-id)
-    # -------------------------------------------------------
+    # =======================================================
+    # 1. SECURITY: Route Filtering (Prefix-Lists & Route-Maps)
+    # =======================================================
+    - name: Create Prefix-List to ONLY allow the local /32 Loopback
+      arista.eos.eos_config:
+        lines:
+          - "seq 10 permit {{ loopback_ip }}/32"
+        parents: "ip prefix-list PL-LOOPBACKS"
+
+    - name: Create Route-Map to apply the Prefix-List outbound
+      arista.eos.eos_config:
+        lines:
+          - "match ip address prefix-list PL-LOOPBACKS"
+        parents: "route-map RM-UNDERLAY-OUT permit 10"
+
+
+    # =======================================================
+    # 2. INTERFACES: Loopback & P2P with BFD
+    # =======================================================
     - name: Configure underlay Loopback
       arista.eos.eos_config:
         lines:
           - "ip address {{ loopback_ip }}/32"
         parents: "interface {{ loopback_interface }}"
 
-    # -------------------------------------------------------
-    # P2P fabric interfaces
-    # -------------------------------------------------------
-    - name: Configure fabric interfaces
+    - name: Configure fabric P2P interfaces with BFD
       arista.eos.eos_config:
         lines:
           - "description P2P to {{ item.peer_name }}"
-          - no switchport
+          - "no switchport"
           - "ip address {{ item.ip }}/31"
-          - no shutdown
+          - "bfd interval 300 min-rx 300 multiplier 3" # Sub-second failover
+          - "no shutdown"
         parents: "interface {{ item.interface }}"
       loop: "{{ fabric_interfaces }}"
 
-    # -------------------------------------------------------
-    # IP routing + ECMP
-    # -------------------------------------------------------
-    - name: Enable IP routing
+
+    # =======================================================
+    # 3. ROUTING & ECMP
+    # =======================================================
+    - name: Enable global IP routing
       arista.eos.eos_config:
         lines:
-          - ip routing
+          - "ip routing"
 
     - name: Enable maximum ECMP paths
       arista.eos.eos_config:
@@ -41,41 +56,47 @@
           - "maximum-paths {{ groups['spines'] | length if inventory_hostname in groups['leaves'] else groups['leaves'] | length }}"
         parents: "router bgp {{ bgp_asn }}"
 
-    # -------------------------------------------------------
-    # eBGP
-    # -------------------------------------------------------
-    - name: Configure eBGP router-id
+
+    # =======================================================
+    # 4. BGP: Peer Groups & Neighbors
+    # =======================================================
+    - name: Configure eBGP router-id and Create Peer Group
       arista.eos.eos_config:
         lines:
           - "router-id {{ loopback_ip }}"
+          - "neighbor IPv4-UNDERLAY peer group"
+          - "neighbor IPv4-UNDERLAY send-community"
+          - "neighbor IPv4-UNDERLAY bfd" # Tell BGP to use BFD for this group
         parents: "router bgp {{ bgp_asn }}"
 
-    - name: Configure eBGP neighbors
+    - name: Allow AS-Path for Leaves (If sharing the same AS number)
       arista.eos.eos_config:
         lines:
+          - "neighbor IPv4-UNDERLAY allowas-in 1"
+        parents: "router bgp {{ bgp_asn }}"
+      when: inventory_hostname in groups['leaves']
+
+    - name: Map physical neighbors to the Peer Group
+      arista.eos.eos_config:
+        lines:
+          - "neighbor {{ item.peer_ip }} peer group IPv4-UNDERLAY"
           - "neighbor {{ item.peer_ip }} remote-as {{ item.peer_asn }}"
           - "neighbor {{ item.peer_ip }} description {{ item.peer_name }}"
         parents: "router bgp {{ bgp_asn }}"
       loop: "{{ fabric_interfaces }}"
 
-    # Allow leaves to receive routes from both spines sharing AS 65000
-    # without BGP AS-path loop prevention dropping them.
-    - name: Allow AS path for leaves (allowas-in for same-AS spines)
-      arista.eos.eos_config:
-        lines:
-          - "neighbor {{ item.peer_ip }} allowas-in 1"
-        parents: "router bgp {{ bgp_asn }}"
-      loop: "{{ fabric_interfaces }}"
-      when: inventory_hostname in groups['leaves']
 
-    - name: Activate neighbors in IPv4 unicast address-family
+    # =======================================================
+    # 5. BGP: Address Family & Advertising Routes
+    # =======================================================
+    - name: Activate Peer Group and Apply Route-Map
       arista.eos.eos_config:
         lines:
-          - "neighbor {{ item.peer_ip }} activate"
+          - "neighbor IPv4-UNDERLAY activate"
+          - "neighbor IPv4-UNDERLAY route-map RM-UNDERLAY-OUT out" # Apply the security filter
         parents:
           - "router bgp {{ bgp_asn }}"
-          - address-family ipv4
-      loop: "{{ fabric_interfaces }}"
+          - "address-family ipv4"
 
     - name: Advertise underlay loopback into BGP
       arista.eos.eos_config:
@@ -83,18 +104,16 @@
           - "network {{ loopback_ip }}/32"
         parents:
           - "router bgp {{ bgp_asn }}"
-          - address-family ipv4
+          - "address-family ipv4"
 
-    # -------------------------------------------------------
-    # Save
-    # -------------------------------------------------------
+
+    # =======================================================
+    # 6. SAVE & VERIFY
+    # =======================================================
     - name: Save config
       arista.eos.eos_command:
         commands: write memory
 
-    # -------------------------------------------------------
-    # Verify
-    # -------------------------------------------------------
     - name: Show BGP summary
       arista.eos.eos_command:
         commands: show bgp summary
