@@ -2,7 +2,10 @@
 import json
 import sys
 import os
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+
+# Import physical config
 from sots.config import (
     NUM_SPINES, NUM_LEAVES, NUM_SERVERS,
     MGMT_BASE_IP, MGMT_START,
@@ -11,7 +14,9 @@ from sots.config import (
     SPINE_AS_BASE, LEAF_AS_BASE,
     UNDERLAY_LOOPBACK, VTEP_LOOPBACK, VTEP_SUBNET, VXLAN_INTERFACE,
 )
-from sots.vlans import VLANS
+
+# Import our new Layer 3 logical config
+from sots.vlans import VLANS, TENANTS
 
 inventory = {
     "spines":   {"hosts": []},
@@ -79,7 +84,9 @@ for i in range(NUM_SPINES):
             "peer_asn":  SPINE_AS_BASE,
         })
 
-# Spines
+# -------------------------------------------------------------------------
+# Build Spines
+# -------------------------------------------------------------------------
 for i in range(NUM_SPINES):
     name    = f"Spine-{i + 1}"
     mgmt_ip = f"{MGMT_BASE_IP}.{mgmt}"
@@ -98,7 +105,9 @@ for i in range(NUM_SPINES):
     inventory["spines"]["hosts"].append(name)
     inventory["_meta"]["hostvars"][name] = vars_
 
-# Leaves
+# -------------------------------------------------------------------------
+# Build Leaves
+# -------------------------------------------------------------------------
 for j in range(NUM_LEAVES):
     name    = f"Leaf-{j + 1}"
     mgmt_ip = f"{MGMT_BASE_IP}.{mgmt}"
@@ -118,10 +127,12 @@ for j in range(NUM_LEAVES):
         "bgp_asn":             leaf_loopbacks[j]["asn"],
         "fabric_interfaces":   leaf_fabric[j],
         "is_vtep":             True,
+        # INJECTING LAYER 3 OVERLAY VARIABLES HERE:
+        "tenants":             TENANTS,
         "vlans":               VLANS,
         "vtep_interface":      VTEP_LOOPBACK,               # Loopback1 — distinct from underlay loopback
         "vtep_ip":             f"{VTEP_SUBNET}.{j + 1}",    # e.g. 10.254.0.1
-        "vxlan_interface":     VXLAN_INTERFACE,              # Vxlan1
+        "vxlan_interface":     VXLAN_INTERFACE,             # Vxlan1
         "server_interfaces":   server_interfaces,
         "overlay_peers":       spine_loopbacks,             # Leaves peer with all Spines
     })
