@@ -33,7 +33,6 @@
           - "router bgp {{ bgp_asn }}"
           - "address-family evpn"
 
-    # FIX 4: spines were never saving their config
     - name: Save config
       arista.eos.eos_command:
         commands: write memory
@@ -55,9 +54,6 @@
         lines:
           - "ip virtual-router mac-address 00:1c:73:00:00:99"
 
-    # FIX 1: split into two tasks — eos_config cannot apply two unrelated
-    # global-level commands in one lines block when they affect different
-    # config contexts (vrf instance vs ip routing vrf).
     - name: Create Tenant VRF instances
       arista.eos.eos_config:
         lines:
@@ -80,12 +76,20 @@
         parents: "vlan {{ item.vlan_id }}"
       loop: "{{ vlans }}"
 
-    # FIX 2: "interface Vlan {{ item.vlan_id }}" had a space — EOS syntax
-    # is "Vlan10" not "Vlan 10". The space causes an invalid token error.
-    - name: Create Layer 3 SVIs (Anycast Gateways)
+    # FIX: Split into two tasks — EOS clears IP addresses when a VRF is
+    # assigned to an SVI. Bundling both lines means "ip address virtual"
+    # can be silently skipped by eos_config idempotency after the VRF
+    # assignment wipes it. Separate tasks guarantee execution order.
+    - name: Assign SVI to Tenant VRF
       arista.eos.eos_config:
         lines:
           - "vrf {{ item.vrf }}"
+        parents: "interface Vlan{{ item.vlan_id }}"
+      loop: "{{ vlans }}"
+
+    - name: Set Anycast Gateway IP on SVI
+      arista.eos.eos_config:
+        lines:
           - "ip address virtual {{ item.anycast_ip }}"
         parents: "interface Vlan{{ item.vlan_id }}"
       loop: "{{ vlans }}"
@@ -173,14 +177,10 @@
           - "vlan {{ item.vlan_id }}"
       loop: "{{ vlans }}"
 
-    # FIX 3: "route-target both evpn X:X" is not valid EOS syntax.
-    # Inside a VRF BGP context, EVPN route-targets must be set explicitly
-    # with "route-target import evpn" and "route-target export evpn".
-    # "route-target both" applies only to standard VPN (VPNv4), not EVPN.
     - name: Advertise Tenant Routing Tables into EVPN (IP-VRF)
       arista.eos.eos_config:
         lines:
-          - "rd {{ item.l3_vni }}:{{ item.l3_vni }}"
+          - "rd {{ loopback_ip }}:{{ item.l3_vni }}"
           - "route-target import evpn {{ item.l3_vni }}:{{ item.l3_vni }}"
           - "route-target export evpn {{ item.l3_vni }}:{{ item.l3_vni }}"
           - "redistribute connected"
