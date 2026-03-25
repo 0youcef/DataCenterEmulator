@@ -4,7 +4,12 @@
 TENANTS = [
     {
         "name": "VRF_PEDAGOGY",
-        "l3_vni": 50010
+        "l3_vni": 50010,
+    "external_handoff":  True,
+    "handoff_interface": "Ethernet3",
+    "handoff_local_ip":  "10.1.0.1/30",
+    "handoff_peer_ip":   "10.1.0.2",
+    "handoff_peer_asn":  65999,
     },
     {
         "name": "VRF_RESEARCH",

@@ -8,11 +8,24 @@
     # =======================================================
     # 1. SECURITY: Route Filtering (Prefix-Lists & Route-Maps)
     # =======================================================
-    - name: Create Prefix-List to ONLY allow the local /32 Loopback
+    - name: Add underlay Loopback0 to Prefix-List
       arista.eos.eos_config:
         lines:
           - "seq 10 permit {{ loopback_ip }}/32"
         parents: "ip prefix-list PL-LOOPBACKS"
+
+    # CRITICAL FIX: VTEP Loopback1 IPs (10.254.0.x/32) are advertised into
+    # BGP in overlay.yml via "network {{ vtep_ip }}/32". However, the outbound
+    # route-map RM-UNDERLAY-OUT filters BGP advertisements to only what matches
+    # PL-LOOPBACKS. Without this entry, VTEP /32 routes are silently dropped
+    # before reaching spine peers — VXLAN tunnels can never establish because
+    # no leaf knows how to reach any other leaf's VTEP IP.
+    - name: Add VTEP Loopback1 to Prefix-List (Leaves/VTEPs only)
+      arista.eos.eos_config:
+        lines:
+          - "seq 20 permit {{ vtep_ip }}/32"
+        parents: "ip prefix-list PL-LOOPBACKS"
+      when: is_vtep
 
     - name: Create Route-Map to apply the Prefix-List outbound
       arista.eos.eos_config:
@@ -36,7 +49,7 @@
           - "description P2P to {{ item.peer_name }}"
           - "no switchport"
           - "ip address {{ item.ip }}/31"
-          - "bfd interval 300 min-rx 300 multiplier 3" # Sub-second failover
+          - "bfd interval 300 min-rx 300 multiplier 3"
           - "no shutdown"
         parents: "interface {{ item.interface }}"
       loop: "{{ fabric_interfaces }}"
@@ -66,15 +79,15 @@
           - "router-id {{ loopback_ip }}"
           - "neighbor IPv4-UNDERLAY peer group"
           - "neighbor IPv4-UNDERLAY send-community"
-          - "neighbor IPv4-UNDERLAY bfd" # Tell BGP to use BFD for this group
+          - "neighbor IPv4-UNDERLAY bfd"
         parents: "router bgp {{ bgp_asn }}"
 
-    - name: Allow AS-Path for Leaves (If sharing the same AS number)
+    - name: Allow AS-Path for Spines (since spines share AS 65000)
       arista.eos.eos_config:
         lines:
           - "neighbor IPv4-UNDERLAY allowas-in 1"
         parents: "router bgp {{ bgp_asn }}"
-      when: inventory_hostname in groups['leaves']
+      when: inventory_hostname in groups['spines']
 
     - name: Map physical neighbors to the Peer Group
       arista.eos.eos_config:
@@ -89,16 +102,16 @@
     # =======================================================
     # 5. BGP: Address Family & Advertising Routes
     # =======================================================
-    - name: Activate Peer Group and Apply Route-Map
+    - name: Activate Peer Group and Apply outbound Route-Map
       arista.eos.eos_config:
         lines:
           - "neighbor IPv4-UNDERLAY activate"
-          - "neighbor IPv4-UNDERLAY route-map RM-UNDERLAY-OUT out" # Apply the security filter
+          - "{{ 'neighbor IPv4-UNDERLAY route-map RM-UNDERLAY-OUT out' if inventory_hostname in groups['leaves'] else 'no neighbor IPv4-UNDERLAY route-map RM-UNDERLAY-OUT out' }}"
         parents:
           - "router bgp {{ bgp_asn }}"
           - "address-family ipv4"
 
-    - name: Advertise underlay loopback into BGP
+    - name: Advertise underlay Loopback into BGP
       arista.eos.eos_config:
         lines:
           - "network {{ loopback_ip }}/32"

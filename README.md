@@ -4,22 +4,6 @@ Automated deployment and configuration of a spine-leaf data center topology in G
 
 ---
 
-## Project Structure
-
-```
-.
-├── config.py               # Single source of truth — edit this file only
-├── gns3.py                 # GNS3 API client library
-├── deploy_fabric.py        # Deploy the initial topology
-├── add_node.py             # Add nodes to a running topology
-├── config_switches.py      # Configure switches via Telnet (Netmiko)
-└── ansible/
-    ├── inventory.py        # Dynamic Ansible inventory (reads config.py)
-    └── playbook.yml        # Ansible playbook for switch configuration
-```
-
----
-
 ## Prerequisites
 
 ### System
@@ -43,81 +27,7 @@ sudo ip addr add 172.20.20.1/24 dev br0
 sudo setcap cap_net_admin,cap_net_raw=eip /usr/bin/ubridge
 ```
 
-### GNS3 Templates
 
-Two templates must exist in GNS3 before deploying:
-
-**Arista vEOS:**
-- Image: `vEOS-lab-x.x.x.qcow2` + `Aboot-veos-x.x.x.iso`
-- RAM: 2048MB
-- NICs: `e1000`, 12 adapters
-- QEMU options: `-nographic`
-- Place images in `~/GNS3/images/QEMU/`
-
-**ESXi:**
-- Image: pre-installed `ESXi.qcow2` (see below)
-- RAM: 4096MB
-- NICs: `e1000e`, 4 adapters
-- QEMU options: `-machine q35 -enable-kvm -cpu host -smp 4 -usb -device usb-tablet`
-- Enable "Use as a linked base VM"
-- Enable "Enable the UEFI boot mode"
-
-### Preparing the ESXi image
-
-Install ESXi outside GNS3 first so all nodes share one golden image:
-
-```bash
-# Create blank disk
-qemu-img create -f qcow2 ~/GNS3/images/QEMU/ESXi.qcow2 16G
-
-# Install ESXi (connect via VNC on localhost:5900)
-qemu-system-x86_64 \
-  -machine q35 -enable-kvm -cpu host -smp 4 -m 8192 \
-  -hda ~/GNS3/images/QEMU/ESXi.qcow2 \
-  -cdrom VMware-VMvisor-*.iso \
-  -boot order=dc \
-  -device e1000e,netdev=net0 -netdev user,id=net0 \
-  -usb -device usb-tablet -vnc :0
-
-vncviewer localhost:5900
-
-# Keep a backup of the clean install
-cp ~/GNS3/images/QEMU/ESXi.qcow2 ~/GNS3/images/QEMU/ESXi-bare.qcow2
-```
-
-Each GNS3 node gets a linked clone (delta) backed by this image — changes in one VM never affect others.
-
----
-
-## Configuration
-
-All settings live in `config.py`. Edit this file only — all scripts read from it automatically.
-
-```python
-GNS3_SERVER   = "http://127.0.0.1:3080/v3"  # GNS3 server address
-GNS3_USER     = "admin"
-GNS3_PASSWORD = "admin"
-
-PROJECT_NAME  = "DataCenter"
-
-TEMPLATE_NAME_ARISTA = "Arista-vEOS"  # Must match GNS3 template name exactly
-TEMPLATE_NAME_SERVER = "ESXi"
-
-NUM_SPINES  = 2   # Updated automatically by add_node.py
-NUM_LEAVES  = 3
-NUM_SERVERS = 2
-
-COMPUTE_SPINE  = "local"   # Use the name shown in GNS3 GUI, not the ID
-COMPUTE_LEAF   = "local"
-COMPUTE_SERVER = "local"
-
-MGMT_BASE_IP = "192.168.100"  # Management subnet
-MGMT_START   = 10             # First host — IPs start at 192.168.100.10
-MGMT_BRIDGE  = "br0"          # Host bridge interface for management access
-
-SSH_USER = "admin"
-SSH_PASS = ""
-```
 
 ### Management IP assignment
 
@@ -145,7 +55,7 @@ All compute machines need the same images in `~/GNS3/images/QEMU/`.
 ### 1. Deploy the topology
 
 ```bash
-python deploy_fabric.py
+python topology/deploy_fabric.py
 ```
 
 This creates the GNS3 project, spawns all nodes, wires the spine-leaf fabric, connects everything to a management switch bridged to `br0`, and starts all nodes. The script waits for a keypress before closing the project.
@@ -167,40 +77,27 @@ Each spine is wired to every leaf (full mesh). Servers connect to leaves in roun
 
 ### 2. Configure switches via Telnet
 
-Run after nodes have booted (vEOS takes 3-5 minutes):
+Run after nodes have booted (vEOS takes 1-3 minutes):
 
 ```bash
-python config_switches.py
+python config/config_switches.py
 ```
 
 Connects to each switch via its GNS3 console port over Telnet, sets the hostname, configures Management1 IP, enables IP routing, eAPI (HTTPS), and SSH. The script polls the console port automatically and waits for the switch to be ready before connecting.
 
 ### 3. Configure switches via Ansible (eAPI)
 
-After step 2, switches are reachable via eAPI. Run the playbook:
+After step 2, switches are reachable via eAPI. Run a playbook:
 
 ```bash
-cd ansible/
+cd configs/ansible/
 chmod +x inventory.py
-ansible-playbook -i inventory.py playbook.yml
+ansible-playbook -i inventory.py underlay.yml
+ansible-playbook -i inventory.py overlay.yml
+ansible-playbook -i inventory.py border_leaf.yml
 ```
 
 The dynamic inventory (`inventory.py`) reads `config.py` and builds the host list automatically — no hardcoded IPs or hostnames. Uses `httpapi` connection over HTTPS port 443.
-
-To push additional config, add tasks to `playbook.yml` using `eos_config`:
-
-```yaml
-- name: Configure an interface
-  arista.eos.eos_config:
-    lines:
-      - description Link to Spine-1
-      - no switchport
-      - ip address 10.0.0.1/31
-      - no shutdown
-    parents: interface Ethernet1
-```
-
-`parents` sets the config context — the list represents the path from global config down to where the lines should be applied. Config is idempotent: running the playbook multiple times won't duplicate lines.
 
 ### 4. Add nodes to a running topology
 
