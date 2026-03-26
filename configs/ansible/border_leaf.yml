@@ -10,42 +10,54 @@
           - "hostname {{ hostname }}"
 
     # ------------------------------------------------------------------
-    # 1a. Set interface to routed mode first
+    # 1. Parent interface — set to routed mode once.
+    #    We use a unique list of parent interfaces to avoid applying
+    #    "no switchport" multiple times if tenants share the same port.
     # ------------------------------------------------------------------
-    - name: Set External Interface to routed mode
+    - name: Set parent interface to routed mode (no switchport)
       arista.eos.eos_config:
         lines:
           - "no switchport"
           - "no shutdown"
-        parents: "interface {{ item.interface }}"
+        parents: "interface {{ item }}"
+      loop: "{{ external_handoffs | map(attribute='interface') | unique | list }}"
+
+    # ------------------------------------------------------------------
+    # 2a. Create subinterface and set 802.1Q encapsulation.
+    #     Subinterface name = parent + "." + vlan  (e.g. Ethernet10.10)
+    #     Encapsulation MUST be set before VRF — EOS rejects VRF assignment
+    #     on a subinterface that has no encapsulation defined yet.
+    # ------------------------------------------------------------------
+    - name: Set 802.1Q encapsulation on subinterface
+      arista.eos.eos_config:
+        lines:
+          - "encapsulation dot1q vlan {{ item.vlan }}"
+        parents: "interface {{ item.interface }}.{{ item.vlan }}"
       loop: "{{ external_handoffs }}"
 
     # ------------------------------------------------------------------
-    # 1b. Assign VRF — this wipes any IP already on the interface
+    # 2b. Assign VRF — wipes any IP on the subinterface (EOS behavior)
     # ------------------------------------------------------------------
-    - name: Assign External Interface to VRF
+    - name: Assign subinterface to VRF
       arista.eos.eos_config:
         lines:
           - "vrf {{ item.vrf }}"
-        parents: "interface {{ item.interface }}"
+        parents: "interface {{ item.interface }}.{{ item.vlan }}"
       loop: "{{ external_handoffs }}"
 
     # ------------------------------------------------------------------
-    # 1c. Assign IP in a separate task — guarantees it runs AFTER the VRF
-    #     assignment. Bundling with the vrf line risks silent omission
-    #     because eos_config idempotency check sees the interface already
-    #     has vrf and skips re-applying lines it thinks are unchanged,
-    #     including the ip address that was just wiped.
+    # 2c. Assign IP in a separate task — must run after VRF assignment
+    #     because VRF assignment clears the IP.
     # ------------------------------------------------------------------
-    - name: Assign IP Address to External Interface
+    - name: Assign IP address to subinterface
       arista.eos.eos_config:
         lines:
           - "ip address {{ item.local_ip }}"
-        parents: "interface {{ item.interface }}"
+        parents: "interface {{ item.interface }}.{{ item.vlan }}"
       loop: "{{ external_handoffs }}"
 
     # ------------------------------------------------------------------
-    # 2. eBGP neighbor — declared inside VRF BGP context
+    # 3. eBGP neighbor — declared inside the VRF BGP context
     # ------------------------------------------------------------------
     - name: Configure eBGP neighbor toward external router
       arista.eos.eos_config:
@@ -57,9 +69,6 @@
           - "vrf {{ item.vrf }}"
       loop: "{{ external_handoffs }}"
 
-    # ------------------------------------------------------------------
-    # 2b. Activate inside address-family ipv4 — not directly under vrf
-    # ------------------------------------------------------------------
     - name: Activate eBGP neighbor in IPv4 address-family
       arista.eos.eos_config:
         lines:
@@ -71,7 +80,7 @@
       loop: "{{ external_handoffs }}"
 
     # ------------------------------------------------------------------
-    # 3. Tie external BGP to EVPN fabric via route-targets
+    # 4. Tie external BGP to EVPN fabric via route-targets
     # ------------------------------------------------------------------
     - name: Redistribute routes between EVPN and external BGP
       arista.eos.eos_config:
