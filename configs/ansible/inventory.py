@@ -76,8 +76,9 @@ def build_external_handoffs(tenants):
             continue
         handoffs.append({
             "vrf":       t["name"],
-            "l3_vni":    t["l3_vni"],      # sourced directly from TENANTS — no duplication
+            "l3_vni":    t["l3_vni"],
             "interface": t["handoff_interface"],
+            "vlan":      t["handoff_vlan"],   # 802.1Q tag — was missing, causing item.vlan error
             "local_ip":  t["handoff_local_ip"],
             "peer_ip":   t["handoff_peer_ip"],
             "peer_asn":  t["handoff_peer_asn"],
