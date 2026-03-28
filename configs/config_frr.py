@@ -99,14 +99,6 @@ def configure_debian_telnet():
             net_connect.write_channel(config.SSH_PASS + "\n")
             time.sleep(2)
 
-        print("Elevating to root...")
-        net_connect.write_channel("sudo su\n")
-        time.sleep(1)
-        output = net_connect.read_channel()
-        if "password" in output.lower() or "[sudo]" in output.lower():
-            net_connect.write_channel(config.SSH_PASS + "\n")
-            time.sleep(1)
-
     except Exception as e:
         print(f"Failed to connect via Telnet: {e}")
         return
@@ -115,10 +107,11 @@ def configure_debian_telnet():
     # 1. Linux OS commands — interfaces and FRR daemon
     # ---------------------------------------------------------
     linux_cmds = [
+        f"ip addr add {config.MGMT_BASE_IP}.{config.MGMT_START+config.NUM_LEAVES+config.NUM_SPINES}/24 dev enp2s0",
+        "systemctl enable ssh",
+        "systemctl start ssh",
         "modprobe 8021q",
-        "sed -i 's/bgpd=no/bgpd=yes/g' /etc/frr/daemons",
-        "systemctl restart frr",
-        "sleep 3",
+        "sleep 1",
         f"ip link set {FRR_IFACE} up",
         # BUG 4 FIX: Add a blackhole route so FRR's RIB contains the prefix.
         # BGP will not advertise a "network X" statement unless the prefix

@@ -60,15 +60,132 @@
     # ------------------------------------------------------------------
     # 4. Save & verify
     # ------------------------------------------------------------------
-    - name: Save config
-      arista.eos.eos_command:
-        commands: write memory
+=======
+- name: Build MLAG targets from leaf index pairs
+  hosts: localhost
+  gather_facts: no
+  vars:
+    # Pair format: [leaf_index_a, leaf_index_b]
+    # Leaf index follows groups['leaves'] order from inventory.py.
+    # Example with current naming: 1=Border-1, 2=Leaf-2, 3=Leaf-3, ...
+    mlag_pairs:
+      - [1, 2]
 
-    - name: Show MLAG status
-      arista.eos.eos_command:
-        commands: show mlag
-      register: mlag_status
+    # Shared MLAG defaults (override with -e as needed)
+    mlag_peer_link_members:
+      - Ethernet49
+      - Ethernet50
+    mlag_peer_link_port_channel: 2000
+    mlag_peer_vlan: 4094
+    mlag_domain_prefix: MLAG
+    mlag_ip_octet_base: 100
 
-    - name: Print MLAG status
-      debug:
-        msg: "{{ mlag_status.stdout_lines[0] }}"
+  tasks:
+    - name: Ensure MLAG pair list is not empty
+      assert:
+        that:
+          - mlag_pairs | length > 0
+        fail_msg: "Set mlag_pairs, for example: -e 'mlag_pairs=[[1,2],[3,4]]'"
+
+    - name: Ensure each leaf index is used only once
+      vars:
+        flat_pairs: "{{ mlag_pairs | flatten }}"
+      assert:
+        that:
+          - (flat_pairs | length) == (flat_pairs | unique | length)
+        fail_msg: "Each leaf index can appear in only one MLAG pair."
+
+    - name: Validate MLAG pair values
+      assert:
+        that:
+          - item | length == 2
+          - item[0] | int != item[1] | int
+          - item[0] | int >= 1
+          - item[1] | int >= 1
+          - item[0] | int <= (groups['leaves'] | length)
+          - item[1] | int <= (groups['leaves'] | length)
+        fail_msg: "Invalid pair {{ item }}. Valid indices are 1..{{ groups['leaves'] | length }}"
+      loop: "{{ mlag_pairs }}"
+      loop_control:
+        label: "{{ item[0] }},{{ item[1] }}"
+
+    - name: Add first switch of each pair to dynamic MLAG group
+      add_host:
+        name: "{{ groups['leaves'][(item[0] | int) - 1] }}"
+        groups: mlag_targets
+        mlag_pair_key: "{{ item[0] }}-{{ item[1] }}"
+        mlag_peer_host: "{{ groups['leaves'][(item[1] | int) - 1] }}"
+        mlag_domain_id: "{{ mlag_domain_prefix }}-{{ item[0] }}-{{ item[1] }}"
+        mlag_peer_link_members: "{{ mlag_peer_link_members }}"
+        mlag_peer_link_port_channel: "{{ mlag_peer_link_port_channel }}"
+        mlag_peer_vlan: "{{ mlag_peer_vlan }}"
+        mlag_local_ip_cidr: "169.254.{{ (mlag_ip_octet_base | int) + pair_idx }}.0/31"
+        mlag_peer_ip: "169.254.{{ (mlag_ip_octet_base | int) + pair_idx }}.1"
+      loop: "{{ mlag_pairs }}"
+      loop_control:
+        index_var: pair_idx
+
+    - name: Add second switch of each pair to dynamic MLAG group
+      add_host:
+        name: "{{ groups['leaves'][(item[1] | int) - 1] }}"
+        groups: mlag_targets
+        mlag_pair_key: "{{ item[0] }}-{{ item[1] }}"
+        mlag_peer_host: "{{ groups['leaves'][(item[0] | int) - 1] }}"
+        mlag_domain_id: "{{ mlag_domain_prefix }}-{{ item[0] }}-{{ item[1] }}"
+        mlag_peer_link_members: "{{ mlag_peer_link_members }}"
+        mlag_peer_link_port_channel: "{{ mlag_peer_link_port_channel }}"
+        mlag_peer_vlan: "{{ mlag_peer_vlan }}"
+        mlag_local_ip_cidr: "169.254.{{ (mlag_ip_octet_base | int) + pair_idx }}.1/31"
+        mlag_peer_ip: "169.254.{{ (mlag_ip_octet_base | int) + pair_idx }}.0"
+      loop: "{{ mlag_pairs }}"
+      loop_control:
+        index_var: pair_idx
+
+
+- name: Configure MLAG on selected switches
+  hosts: mlag_targets
+  gather_facts: no
+
+  tasks:
+    - name: Configure MLAG peer-link member interfaces
+      arista.eos.eos_config:
+        lines:
+          - "description MLAG_PEER_MEMBER to {{ mlag_peer_host }}"
+          - "channel-group {{ mlag_peer_link_port_channel }} mode active"
+          - "no shutdown"
+        parents: "interface {{ item }}"
+      loop: "{{ mlag_peer_link_members }}"
+
+    - name: Configure MLAG peer VLAN
+      arista.eos.eos_config:
+        lines:
+          - "name MLAG_PEER"
+          - "trunk group MLAGPEER"
+        parents: "vlan {{ mlag_peer_vlan }}"
+
+    - name: Configure MLAG peer-link port-channel
+      arista.eos.eos_config:
+        lines:
+          - "description MLAG_PEER_LINK to {{ mlag_peer_host }}"
+          - "switchport mode trunk"
+          - "switchport trunk group MLAGPEER"
+          - "no shutdown"
+        parents: "interface Port-Channel{{ mlag_peer_link_port_channel }}"
+
+    - name: Configure MLAG peer SVI
+      arista.eos.eos_config:
+        lines:
+          - "description MLAG_PEER_SVI"
+          - "no autostate"
+          - "ip address {{ mlag_local_ip_cidr }}"
+          - "no shutdown"
+        parents: "interface Vlan{{ mlag_peer_vlan }}"
+
+    - name: Configure MLAG domain and peer
+      arista.eos.eos_config:
+        lines:
+          - "domain-id {{ mlag_domain_id }}"
+          - "local-interface Vlan{{ mlag_peer_vlan }}"
+          - "peer-address {{ mlag_peer_ip }}"
+          - "peer-link Port-Channel{{ mlag_peer_link_port_channel }}"
+        parents: "mlag configuration"
