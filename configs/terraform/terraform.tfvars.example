@@ -1,0 +1,53 @@
+# SSOT path (optional if your folder layout matches this repo)
+ssot_config_path = "../../sots/config.py"
+
+# Proxmox API
+proxmox_endpoint = "https://pve.example.com:8006/"
+proxmox_insecure = true
+
+# Choose one auth method:
+# 1) API token
+proxmox_api_token = "terraform@pve!vps=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# 2) OR username/password (set proxmox_api_token = null when using this)
+# proxmox_api_token = null
+# proxmox_username  = "terraform@pve"
+# proxmox_password  = "change-me"
+
+# Clone target and template
+proxmox_node_name       = "pve"
+proxmox_template_vm_id  = 9000
+proxmox_datastore_id    = "local-lvm"
+proxmox_bridge          = "vmbr0"
+
+# Naming and lifecycle
+vm_name_prefix = null
+vm_tags        = ["vps", "terraform"]
+vm_started     = true
+vm_on_boot     = true
+vm_full_clone  = true
+
+# Compute
+vm_cpu_cores   = 2
+vm_cpu_sockets = 1
+vm_cpu_type    = "x86-64-v2-AES"
+vm_memory_mb   = 2048
+vm_memory_floating_mb = null
+
+# Disk
+vm_disk_interface = "scsi0"
+vm_disk_size_gb   = 20
+vm_disk_iothread  = true
+
+# Network
+vm_network_model   = "virtio"
+vm_network_vlan_id = null
+vm_ipv4_address    = "dhcp"
+vm_ipv4_gateway    = null
+
+# Cloud-init user credentials
+vm_ci_username = null
+vm_ci_password = null
+vm_ssh_public_keys = [
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... your-key",
+]
