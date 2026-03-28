@@ -205,3 +205,23 @@ COMMANDS = {
     "server": add_server,
 }
 
+if __name__ == "__main__":
+    if len(sys.argv) != 2 or sys.argv[1] not in COMMANDS:
+        print(f"Usage: python add_node.py [{' | '.join(COMMANDS)}]")
+        sys.exit(1)
+
+    node_type = sys.argv[1]
+
+    print("Authenticating with GNS3 API...")
+    gns3 = GNS3Client(GNS3_SERVER, GNS3_USER, GNS3_PASSWORD)
+    print("Authentication successful!\n")
+
+    project_id = get_project_id(gns3)
+    gns3.open_project(project_id)
+    print(f"Project ID: {project_id}\n")
+
+    try:
+        COMMANDS[node_type](gns3, project_id)
+    except Exception as e:
+        print(f"\nError: {e}")
+        sys.exit(1)
