@@ -1,0 +1,74 @@
+---
+- name: Configure MLAG on Selected Leaf Pairs
+  hosts: mlag_leaves
+  gather_facts: no
+
+  tasks:
+    # ------------------------------------------------------------------
+    # 1. Peer-link transport (VLAN + Port-Channel + member links)
+    # ------------------------------------------------------------------
+    - name: Create MLAG peer VLAN and trunk group
+      arista.eos.eos_config:
+        lines:
+          - "name {{ mlag.peer_vlan_name }}"
+          - "trunk group {{ mlag.trunk_group }}"
+        parents: "vlan {{ mlag.peer_vlan }}"
+
+    - name: Configure MLAG peer-link Port-Channel
+      arista.eos.eos_config:
+        lines:
+          - "description MLAG peer-link to {{ mlag.peer_name }}"
+          - "switchport mode trunk"
+          - "switchport trunk group {{ mlag.trunk_group }}"
+          - "no shutdown"
+        parents: "interface Port-Channel{{ mlag.peer_link_channel_id }}"
+
+    - name: Add interfaces to MLAG peer-link Port-Channel
+      arista.eos.eos_config:
+        lines:
+          - "description MLAG peer-link member to {{ mlag.peer_name }}"
+          - "channel-group {{ mlag.peer_link_channel_id }} mode active"
+          - "no shutdown"
+        parents: "interface {{ item }}"
+      loop: "{{ mlag.peer_link_members }}"
+
+    # ------------------------------------------------------------------
+    # 2. Keepalive SVI used by MLAG control-plane
+    # ------------------------------------------------------------------
+    - name: Configure MLAG keepalive SVI
+      arista.eos.eos_config:
+        lines:
+          - "description MLAG keepalive"
+          - "no autostate"
+          - "ip address {{ mlag.local_ip }}"
+          - "no shutdown"
+        parents: "interface Vlan{{ mlag.peer_vlan }}"
+
+    # ------------------------------------------------------------------
+    # 3. MLAG control-plane
+    # ------------------------------------------------------------------
+    - name: Configure MLAG domain
+      arista.eos.eos_config:
+        lines:
+          - "domain-id {{ mlag.domain_id }}"
+          - "local-interface Vlan{{ mlag.peer_vlan }}"
+          - "peer-address {{ mlag.peer_ip }}"
+          - "peer-link Port-Channel{{ mlag.peer_link_channel_id }}"
+          - "reload-delay mlag {{ mlag.reload_delay_mlag }}"
+        parents: "mlag configuration"
+
+    # ------------------------------------------------------------------
+    # 4. Save & verify
+    # ------------------------------------------------------------------
+    - name: Save config
+      arista.eos.eos_command:
+        commands: write memory
+
+    - name: Show MLAG status
+      arista.eos.eos_command:
+        commands: show mlag
+      register: mlag_status
+
+    - name: Print MLAG status
+      debug:
+        msg: "{{ mlag_status.stdout_lines[0] }}"
