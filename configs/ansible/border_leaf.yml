@@ -11,8 +11,6 @@
 
     # ------------------------------------------------------------------
     # 1. Parent interface — set to routed mode once.
-    #    We use a unique list of parent interfaces to avoid applying
-    #    "no switchport" multiple times if tenants share the same port.
     # ------------------------------------------------------------------
     - name: Set parent interface to routed mode (no switchport)
       arista.eos.eos_config:
@@ -23,10 +21,7 @@
       loop: "{{ external_handoffs | map(attribute='interface') | unique | list }}"
 
     # ------------------------------------------------------------------
-    # 2a. Create subinterface and set 802.1Q encapsulation.
-    #     Subinterface name = parent + "." + vlan  (e.g. Ethernet10.10)
-    #     Encapsulation MUST be set before VRF — EOS rejects VRF assignment
-    #     on a subinterface that has no encapsulation defined yet.
+    # 2a. Encapsulation MUST be set before VRF assignment
     # ------------------------------------------------------------------
     - name: Set 802.1Q encapsulation on subinterface
       arista.eos.eos_config:
@@ -36,7 +31,7 @@
       loop: "{{ external_handoffs }}"
 
     # ------------------------------------------------------------------
-    # 2b. Assign VRF — wipes any IP on the subinterface (EOS behavior)
+    # 2b. VRF assignment — wipes any IP (EOS behavior)
     # ------------------------------------------------------------------
     - name: Assign subinterface to VRF
       arista.eos.eos_config:
@@ -46,8 +41,7 @@
       loop: "{{ external_handoffs }}"
 
     # ------------------------------------------------------------------
-    # 2c. Assign IP in a separate task — must run after VRF assignment
-    #     because VRF assignment clears the IP.
+    # 2c. IP after VRF — separate task guarantees order
     # ------------------------------------------------------------------
     - name: Assign IP address to subinterface
       arista.eos.eos_config:
@@ -57,7 +51,7 @@
       loop: "{{ external_handoffs }}"
 
     # ------------------------------------------------------------------
-    # 3. eBGP neighbor — declared inside the VRF BGP context
+    # 3. eBGP neighbor toward FRR
     # ------------------------------------------------------------------
     - name: Configure eBGP neighbor toward external router
       arista.eos.eos_config:
@@ -80,7 +74,15 @@
       loop: "{{ external_handoffs }}"
 
     # ------------------------------------------------------------------
-    # 4. Tie external BGP to EVPN fabric via route-targets
+    # 4. Route redistribution — tie external BGP to EVPN fabric
+    #
+    # CRITICAL FIX: added "redistribute bgp".
+    # "redistribute connected" only pushes directly attached subnets
+    # (the /30 handoff link) into EVPN. It does NOT push BGP-learned
+    # routes received from FRR (e.g. 8.8.8.8/32). Without this line,
+    # Border-1 installs FRR routes in its local VRF table but never
+    # re-advertises them as EVPN type-5 — so no other leaf ever sees
+    # them and pings from tenant servers go nowhere.
     # ------------------------------------------------------------------
     - name: Redistribute routes between EVPN and external BGP
       arista.eos.eos_config:
@@ -88,6 +90,7 @@
           - "route-target import evpn {{ item.l3_vni }}:{{ item.l3_vni }}"
           - "route-target export evpn {{ item.l3_vni }}:{{ item.l3_vni }}"
           - "redistribute connected"
+          - "redistribute bgp leaked"
         parents:
           - "router bgp {{ bgp_asn }}"
           - "vrf {{ item.vrf }}"

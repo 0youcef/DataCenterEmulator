@@ -54,16 +54,19 @@
         lines:
           - "ip virtual-router mac-address 00:1c:73:00:00:99"
 
+    # Skip VRF creation for L2-only tenants (l3: false)
     - name: Create Tenant VRF instances
       arista.eos.eos_config:
         lines:
           - "vrf instance {{ item.name }}"
+      when: item.l3 | default(true)
       loop: "{{ tenants }}"
 
     - name: Enable IP routing in Tenant VRFs
       arista.eos.eos_config:
         lines:
           - "ip routing vrf {{ item.name }}"
+      when: item.l3 | default(true)
       loop: "{{ tenants }}"
 
     # ------------------------------------------------------------------
@@ -76,15 +79,14 @@
         parents: "vlan {{ item.vlan_id }}"
       loop: "{{ vlans }}"
 
-    # FIX: Split into two tasks — EOS clears IP addresses when a VRF is
-    # assigned to an SVI. Bundling both lines means "ip address virtual"
-    # can be silently skipped by eos_config idempotency after the VRF
-    # assignment wipes it. Separate tasks guarantee execution order.
+    # EOS clears IP when VRF is assigned — must be two separate tasks.
+    # Skip for L2-only VLANs that have no vrf field.
     - name: Assign SVI to Tenant VRF
       arista.eos.eos_config:
         lines:
           - "vrf {{ item.vrf }}"
         parents: "interface Vlan{{ item.vlan_id }}"
+      when: item.vrf is defined
       loop: "{{ vlans }}"
 
     - name: Set Anycast Gateway IP on SVI
@@ -92,6 +94,7 @@
         lines:
           - "ip address virtual {{ item.anycast_ip }}"
         parents: "interface Vlan{{ item.vlan_id }}"
+      when: item.anycast_ip is defined
       loop: "{{ vlans }}"
 
     # ------------------------------------------------------------------
@@ -128,11 +131,13 @@
         parents: "interface {{ vxlan_interface }}"
       loop: "{{ vlans }}"
 
+    # Skip L3 VNI mapping for L2-only tenants
     - name: Map Layer 3 VNIs (Routing Transit)
       arista.eos.eos_config:
         lines:
           - "vxlan vrf {{ item.name }} vni {{ item.l3_vni }}"
         parents: "interface {{ vxlan_interface }}"
+      when: item.l3 | default(true)
       loop: "{{ tenants }}"
 
     # ------------------------------------------------------------------
@@ -177,6 +182,8 @@
           - "vlan {{ item.vlan_id }}"
       loop: "{{ vlans }}"
 
+    # Skip IP-VRF advertisement for L2-only tenants
+    # rd uses loopback_ip:l3_vni — ensures uniqueness per leaf (standard practice)
     - name: Advertise Tenant Routing Tables into EVPN (IP-VRF)
       arista.eos.eos_config:
         lines:
@@ -187,10 +194,34 @@
         parents:
           - "router bgp {{ bgp_asn }}"
           - "vrf {{ item.name }}"
+      when: item.l3 | default(true)
       loop: "{{ tenants }}"
 
     # ------------------------------------------------------------------
-    # 7. Server-Facing Ports & Save
+    # 7. Inter-VRF Route Leaking
+    #
+    # Each tenant in vlans.py can declare import_rts: [l3_vni, ...]
+    # to pull routes from another VRF into its own routing table.
+    # This task uses subelements to flatten the nested list:
+    #   item.0 = the tenant dict
+    #   item.1 = one l3_vni to import from a foreign VRF
+    #
+    # Example: VRF_PEDAGOGY with import_rts: [50020] adds:
+    #   route-target import evpn 50020:50020
+    # under its own VRF BGP context, so it installs VRF_RESEARCH prefixes.
+    # Both VRFs must declare the other's l3_vni for symmetric routing.
+    # ------------------------------------------------------------------
+    - name: Apply inter-VRF route-target imports
+      arista.eos.eos_config:
+        lines:
+          - "route-target import evpn {{ item.1 }}:{{ item.1 }}"
+        parents:
+          - "router bgp {{ bgp_asn }}"
+          - "vrf {{ item.0.name }}"
+      loop: "{{ tenants | subelements('import_rts', skip_missing=True) }}"
+
+    # ------------------------------------------------------------------
+    # 8. Server-Facing Ports & Save
     # ------------------------------------------------------------------
     - name: Configure server-facing ports as trunk
       arista.eos.eos_config:

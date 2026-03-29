@@ -177,7 +177,7 @@ def main():
     for name, ip in servers:
         print(f"  {name}  →  {ip}/{MGMT_NETMASK}  (gateway: {MGMT_GATEWAY})")
     print()
-
+    servers=servers[1:]
     for node_name, ip in servers:
         configure_server(node_name, ip)
 
