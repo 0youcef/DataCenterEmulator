@@ -35,8 +35,8 @@ SSH_PASS = "admin"
 #
 # The names must exactly match the compute names shown in GNS3 preferences.
 COMPUTE_SPINES  = ["local"]          # round-robined across all spines
-COMPUTE_LEAVES  = ["adem"]          # round-robined across all leaves
-COMPUTE_SERVERS = ["idris"]          # round-robined across all servers
+COMPUTE_LEAVES  = ["local"]          # round-robined across all leaves
+COMPUTE_SERVERS = ["local"]          # round-robined across all servers
 
 # --- Underlay ---
 FABRIC_SUBNET     = "10.0.0"   # Base for P2P /31 links: 10.0.0.0/31, 10.0.0.2/31, ...
