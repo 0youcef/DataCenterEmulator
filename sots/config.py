@@ -16,11 +16,7 @@ TEMPLATE_NAME_PROXMOX = "Proxmox VE"
 
 NUM_SPINES  = 2
 NUM_LEAVES  = 3
-NUM_SERVERS = 3
-
-COMPUTE_SPINE  = "local"
-COMPUTE_LEAF   = "local"
-COMPUTE_SERVER = "local"
+NUM_SERVERS = 2
 
 MGMT_BASE_IP = "172.20.20"
 MGMT_START   = 10
@@ -28,6 +24,19 @@ MGMT_BRIDGE  = "br-10699de2c093"
 
 SSH_USER = "admin"
 SSH_PASS = "admin"
+
+# --- Compute node assignment ---
+# Each list is round-robined across the corresponding node type.
+# Use "local" for the GNS3 server itself.
+# Examples:
+#   ["local"]                       → all on the local machine
+#   ["local", "compute-1"]          → alternates between local and compute-1
+#   ["compute-1", "compute-2"]      → spreads across two remote computes
+#
+# The names must exactly match the compute names shown in GNS3 preferences.
+COMPUTE_SPINES  = ["local"]          # round-robined across all spines
+COMPUTE_LEAVES  = ["adem"]          # round-robined across all leaves
+COMPUTE_SERVERS = ["idris"]          # round-robined across all servers
 
 # --- Underlay ---
 FABRIC_SUBNET     = "10.0.0"   # Base for P2P /31 links: 10.0.0.0/31, 10.0.0.2/31, ...

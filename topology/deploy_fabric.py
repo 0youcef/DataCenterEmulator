@@ -9,14 +9,14 @@ from sots.config import (
     GNS3_PASSWORD,
     PROJECT_NAME,
     TEMPLATE_NAME_ARISTA,
-    TEMPLATE_NAME_FRR,       # Debian — Server-1 only (FRR internet simulator)
-    TEMPLATE_NAME_PROXMOX,   # Proxmox — all other servers
+    TEMPLATE_NAME_FRR,
+    TEMPLATE_NAME_PROXMOX,
     NUM_SPINES,
     NUM_LEAVES,
     NUM_SERVERS,
-    COMPUTE_SPINE,
-    COMPUTE_LEAF,
-    COMPUTE_SERVER,
+    COMPUTE_SPINES,    # list — round-robined across spines
+    COMPUTE_LEAVES,    # list — round-robined across leaves
+    COMPUTE_SERVERS,   # list — round-robined across servers
     MGMT_BRIDGE,
     MLAG_PAIRS,
     MLAG_PEER_LINK_MEMBER_COUNT,
@@ -30,7 +30,8 @@ def parse_mlag_pair(pair, pair_number):
         parts = list(pair)
     else:
         raise RuntimeError(
-            f"MLAG_PAIRS entry #{pair_number} must be list/tuple or comma-separated string, got {type(pair).__name__}"
+            f"MLAG_PAIRS entry #{pair_number} must be list/tuple or comma-separated string, "
+            f"got {type(pair).__name__}"
         )
 
     if len(parts) != 2:
@@ -47,6 +48,19 @@ def parse_mlag_pair(pair, pair_number):
         ) from exc
 
     return left_idx, right_idx
+
+
+def validate_compute_list(name, lst):
+    """Ensure compute list is a non-empty list of strings."""
+    if not isinstance(lst, (list, tuple)) or len(lst) == 0:
+        raise RuntimeError(
+            f"{name} must be a non-empty list, e.g. ['local'] or ['compute-1', 'compute-2']"
+        )
+
+
+validate_compute_list("COMPUTE_SPINES",  COMPUTE_SPINES)
+validate_compute_list("COMPUTE_LEAVES",  COMPUTE_LEAVES)
+validate_compute_list("COMPUTE_SERVERS", COMPUTE_SERVERS)
 
 
 print("Authenticating with GNS3 API...")
@@ -75,7 +89,7 @@ try:
     print(f"Project ID: {project_id}\n")
 
     # ==========================================
-    # 2. Resolve compute names to IDs
+    # 2. Resolve compute names → IDs
     # ==========================================
     print("Loading computes...")
     computes    = gns3.get_computes()
@@ -89,9 +103,17 @@ try:
             f"Compute '{name}' not found. Available: {list(compute_map.keys())}"
         )
 
-    compute_spine  = resolve(COMPUTE_SPINE)
-    compute_leaf   = resolve(COMPUTE_LEAF)
-    compute_server = resolve(COMPUTE_SERVER)
+    def resolve_list(names):
+        """Resolve a list of compute names, validating each one exists."""
+        return [resolve(n) for n in names]
+
+    compute_ids_spines  = resolve_list(COMPUTE_SPINES)
+    compute_ids_leaves  = resolve_list(COMPUTE_LEAVES)
+    compute_ids_servers = resolve_list(COMPUTE_SERVERS)
+
+    print(f"Spine  computes: {COMPUTE_SPINES}")
+    print(f"Leaf   computes: {COMPUTE_LEAVES}")
+    print(f"Server computes: {COMPUTE_SERVERS}\n")
 
     # ==========================================
     # 3. Fetch templates
@@ -115,47 +137,52 @@ try:
     # ==========================================
     # 4. Spawn nodes
     # ==========================================
-    spines        = []
-    leaves        = []
-    servers       = []
-    next_adapter  = {}
+    spines       = []
+    leaves       = []
+    servers      = []
+    next_adapter = {}
 
     def deploy(template_id, compute_id, name, x, y):
         node = gns3.create_node_from_template(project_id, template_id, compute_id, x, y)
         node = gns3.rename_node(project_id, node["node_id"], name)
         next_adapter[node["node_id"]] = 1
-        print(f" -> Created {name} (Node ID: {node['node_id']})")
+        print(f" -> Created {name} (Node ID: {node['node_id']}, compute: {compute_id})")
         return node
 
     print("Spawning Spines...")
     for i in range(NUM_SPINES):
+        # Round-robin across COMPUTE_SPINES list
+        compute_id = compute_ids_spines[i % len(compute_ids_spines)]
         spines.append(
-            deploy(template_id_arista, compute_spine, f"Spine-{i+1}", i * 200, -100)
+            deploy(template_id_arista, compute_id, f"Spine-{i+1}", i * 200, -100)
         )
 
     print("Spawning Leaves...")
     for i in range(NUM_LEAVES):
+        # Round-robin across COMPUTE_LEAVES list
+        compute_id = compute_ids_leaves[i % len(compute_ids_leaves)]
         leaves.append(
-            deploy(template_id_arista, compute_leaf, f"Leaf-{i+1}", i * 200, 100)
+            deploy(template_id_arista, compute_id, f"Leaf-{i+1}", i * 200, 100)
         )
 
     print("Spawning Servers...")
     leaf_server_count = {}
     for i in range(NUM_SERVERS):
-        leaf    = leaves[i % NUM_LEAVES]
-        leaf_x  = leaf["x"]
-        count   = leaf_server_count.get(leaf["node_id"], 0)
+        leaf   = leaves[i % NUM_LEAVES]
+        leaf_x = leaf["x"]
+        count  = leaf_server_count.get(leaf["node_id"], 0)
         leaf_server_count[leaf["node_id"]] = count + 1
 
-        # Server-1 (i == 0) connects to Border-1 and acts as the FRR
-        # internet/router simulator — uses the Debian template.
-        # All other servers are Proxmox compute nodes.
+        # Round-robin across COMPUTE_SERVERS list.
+        # Server-1 (i == 0) always uses the Debian/FRR template regardless
+        # of which compute it lands on.
+        compute_id  = compute_ids_servers[i % len(compute_ids_servers)]
         template_id = template_id_frr if i == 0 else template_id_proxmox
 
         servers.append(
             deploy(
                 template_id,
-                compute_server,
+                compute_id,
                 f"Server-{i+1}",
                 leaf_x,
                 300 + count * 150,
