@@ -16,7 +16,7 @@ TEMPLATE_NAME_PROXMOX = "Proxmox VE"
 
 NUM_SPINES  = 2
 NUM_LEAVES  = 3
-NUM_SERVERS = 3
+NUM_SERVERS = 1
 
 COMPUTE_SPINE  = "local"
 COMPUTE_LEAF   = "local"
@@ -24,7 +24,7 @@ COMPUTE_SERVER = "local"
 
 MGMT_BASE_IP = "172.20.20"
 MGMT_START   = 10
-MGMT_BRIDGE  = "br-10699de2c093"
+MGMT_BRIDGE  = "br-mgmt"
 
 SSH_USER = "admin"
 SSH_PASS = "admin"

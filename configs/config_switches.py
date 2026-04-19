@@ -12,6 +12,7 @@ from sots.config import (
     NUM_SPINES, NUM_LEAVES,
     MGMT_BASE_IP, MGMT_START,
     SSH_USER, SSH_PASS,
+    COMPUTE_SPINE, COMPUTE_LEAF,
 )
 
 # Build switch name -> mgmt IP mapping dynamically from config
@@ -26,7 +27,7 @@ for i in range(1, NUM_LEAVES + 1):
 
 
 def get_console_ports():
-    """Fetch console port for each switch node from GNS3 API."""
+    """Fetch console host+port for each switch node from GNS3 API."""
     session = requests.Session()
 
     # Authenticate
@@ -46,14 +47,44 @@ def get_console_ports():
         raise RuntimeError(f"Project '{PROJECT_NAME}' not found in GNS3")
     project_id = project['project_id']
 
-    # Get all nodes and extract console ports for switches
+    # Build compute lookups.
+    computes_resp = session.get(f"{GNS3_SERVER}/computes")
+    if computes_resp.status_code != 200:
+        raise RuntimeError(f"Failed to get computes: {computes_resp.text}")
+    computes = computes_resp.json()
+    compute_by_id = {c.get("compute_id"): c for c in computes if c.get("compute_id")}
+    compute_by_name = {c.get("name"): c for c in computes if c.get("name")}
+
+    # Validate SSOT compute names used for switches.
+    for compute_name in (COMPUTE_SPINE, COMPUTE_LEAF):
+        if compute_name != "local" and compute_name not in compute_by_name:
+            raise RuntimeError(
+                f"Configured compute '{compute_name}' not found. "
+                f"Available computes: {sorted(compute_by_name.keys())}"
+            )
+
+    # Get all nodes and extract console endpoints for switches.
     nodes = session.get(f"{GNS3_SERVER}/projects/{project_id}/nodes").json()
-    console_ports = {}
+    api_host = GNS3_SERVER.split("://", 1)[1].split("/", 1)[0].split(":", 1)[0]
+    console_endpoints = {}
     for node in nodes:
         if node['name'] in SWITCHES:
-            console_ports[node['name']] = node['console']
+            compute = compute_by_id.get(node.get("compute_id"), {})
+            host = (
+                compute.get("host")
+                or compute.get("address")
+                or compute.get("ip_address")
+                or compute.get("ip")
+                or ""
+            ).strip()
+            if host in ("", "0.0.0.0", "::", "localhost"):
+                host = api_host
+            console_endpoints[node['name']] = {
+                "host": host,
+                "port": node['console'],
+            }
 
-    return console_ports
+    return console_endpoints
 
 
 def wait_for_telnet(host, port, retries=10, delay=15):
@@ -69,12 +100,12 @@ def wait_for_telnet(host, port, retries=10, delay=15):
     return False
 
 
-def configure_switch(name, mgmt_ip, console_port):
-    print(f"Connecting to {name} via telnet (port {console_port})...")
+def configure_switch(name, mgmt_ip, console_host, console_port):
+    print(f"Connecting to {name} via telnet ({console_host}:{console_port})...")
 
     device = {
         "device_type": "arista_eos_telnet",
-        "host": "127.0.0.1",
+        "host": console_host,
         "port": console_port,
         "username": SSH_USER,
         "password": SSH_PASS,
@@ -86,7 +117,7 @@ def configure_switch(name, mgmt_ip, console_port):
             conn.enable()
             commands = [
                 f"hostname {name}",
-                "zerotouch disable"
+                "zerotouch disable",
                 "ip routing",
                 "interface Management1",
                 f"ip address {mgmt_ip}/24",
@@ -116,23 +147,25 @@ def configure_switch(name, mgmt_ip, console_port):
 
 
 if __name__ == "__main__":
-    print("Fetching console ports from GNS3...\n")
+    print("Fetching console endpoints from GNS3...\n")
     try:
-        console_ports = get_console_ports()
+        console_endpoints = get_console_ports()
     except RuntimeError as e:
         print(f"Error: {e}")
         exit(1)
 
     for name, mgmt_ip in SWITCHES.items():
-        port = console_ports.get(name)
-        if not port:
-            print(f" -> {name}: console port not found in GNS3, skipping")
+        endpoint = console_endpoints.get(name)
+        if not endpoint:
+            print(f" -> {name}: console endpoint not found in GNS3, skipping")
             continue
 
-        if wait_for_telnet("127.0.0.1", port):
-            configure_switch(name, mgmt_ip, port)
+        host = endpoint["host"]
+        port = endpoint["port"]
+        if wait_for_telnet(host, port):
+            configure_switch(name, mgmt_ip, host, port)
         else:
-            print(f" -> {name}: console unreachable after all retries, skipping")
+            print(f" -> {name}: console {host}:{port} unreachable after all retries, skipping")
 
     print("\nDone. eAPI is now available on all configured switches.")
     print("Access via: https://<switch-ip>/command-api")
