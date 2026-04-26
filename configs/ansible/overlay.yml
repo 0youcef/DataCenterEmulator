@@ -28,7 +28,7 @@
       arista.eos.eos_config:
         lines:
           - "neighbor EVPN-OVERLAY activate"
-          - "neighbor EVPN-OVERLAY allowas-in 1"
+          - "neighbor EVPN-OVERLAY next-hop-unchanged"
         parents:
           - "router bgp {{ bgp_asn }}"
           - "address-family evpn"
@@ -36,6 +36,7 @@
     - name: Save config
       arista.eos.eos_command:
         commands: write memory
+
 
 # ================================================================
 # LEAVES — VTEPs (Symmetric IRB, VRFs, Anycast Gateways)
@@ -93,7 +94,7 @@
         lines:
           - "ip address virtual {{ item.anycast_ip }}"
         parents: "interface Vlan{{ item.vlan_id }}"
-      when: item.anycast_ip is defined and item.anycast_ip is not none
+      when: item.anycast_ip is defined
       loop: "{{ vlans }}"
 
     # ------------------------------------------------------------------
@@ -226,8 +227,7 @@
       arista.eos.eos_config:
         lines:
           - "switchport mode trunk"
-          - "switchport trunk allowed vlan {{ vlans | map(attribute='vlan_id') |
-            join(',') }}"
+          - "switchport trunk allowed vlan {{ vlans | map(attribute='vlan_id') | join(',') }}"
           - "no shutdown"
         parents: "interface {{ item }}"
       loop: "{{ server_interfaces }}"

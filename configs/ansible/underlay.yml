@@ -33,6 +33,7 @@
           - "match ip address prefix-list PL-LOOPBACKS"
         parents: "route-map RM-UNDERLAY-OUT permit 10"
 
+
     # =======================================================
     # 2. INTERFACES: Loopback & P2P with BFD
     # =======================================================
@@ -42,22 +43,17 @@
           - "ip address {{ loopback_ip }}/32"
         parents: "interface {{ loopback_interface }}"
 
-    # no ip address runs first so any stale IP from a previous topology
-    # deployment (e.g. after add_node.py shifts the /31 address plan) is
-    # cleared before the new address is assigned.  EOS rejects an "ip address"
-    # command when the same IP is already present on a *different* interface,
-    # and "no ip address" is a safe no-op when the interface is already clean.
     - name: Configure fabric P2P interfaces with BFD
       arista.eos.eos_config:
         lines:
           - "description P2P to {{ item.peer_name }}"
           - "no switchport"
-          - "no ip address"
           - "ip address {{ item.ip }}/31"
           - "bfd interval 300 min-rx 300 multiplier 3"
           - "no shutdown"
         parents: "interface {{ item.interface }}"
       loop: "{{ fabric_interfaces }}"
+
 
     # =======================================================
     # 3. ROUTING & ECMP
@@ -70,9 +66,9 @@
     - name: Enable maximum ECMP paths
       arista.eos.eos_config:
         lines:
-          - "maximum-paths {{ groups['spines'] | length if inventory_hostname in
-            groups['leaves'] else groups['leaves'] | length }}"
+          - "maximum-paths {{ groups['spines'] | length if inventory_hostname in groups['leaves'] else groups['leaves'] | length }}"
         parents: "router bgp {{ bgp_asn }}"
+
 
     # =======================================================
     # 4. BGP: Peer Groups & Neighbors
@@ -102,6 +98,7 @@
         parents: "router bgp {{ bgp_asn }}"
       loop: "{{ fabric_interfaces }}"
 
+
     # =======================================================
     # 5. BGP: Address Family & Advertising Routes
     # =======================================================
@@ -109,9 +106,7 @@
       arista.eos.eos_config:
         lines:
           - "neighbor IPv4-UNDERLAY activate"
-          - "{{ 'neighbor IPv4-UNDERLAY route-map RM-UNDERLAY-OUT out' if
-            inventory_hostname in groups['leaves'] else 'no neighbor
-            IPv4-UNDERLAY route-map RM-UNDERLAY-OUT out' }}"
+          - "{{ 'neighbor IPv4-UNDERLAY route-map RM-UNDERLAY-OUT out' if inventory_hostname in groups['leaves'] else 'no neighbor IPv4-UNDERLAY route-map RM-UNDERLAY-OUT out' }}"
         parents:
           - "router bgp {{ bgp_asn }}"
           - "address-family ipv4"
@@ -123,6 +118,7 @@
         parents:
           - "router bgp {{ bgp_asn }}"
           - "address-family ipv4"
+
 
     # =======================================================
     # 6. SAVE & VERIFY
