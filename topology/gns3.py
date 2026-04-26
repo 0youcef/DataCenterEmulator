@@ -94,6 +94,10 @@ class GNS3Client:
                 {"node_id": node_b, "adapter_number": adapter_b, "port_number": port_b},
             ]
         })
+    def start_capture(self, project_id, link_id):
+        """Starts a packet capture on a specific link."""
+        return self._request("POST", f"/projects/{project_id}/links/{link_id}/capture/start", json={})
+
     def set_switch_ports(self, project_id, node_id, num_ports):
         ports = [{"name": f"Ethernet{i}", "port_number": i, "type": "access", "vlan": 1}
                  for i in range(num_ports)]

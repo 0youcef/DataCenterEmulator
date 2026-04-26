@@ -1,101 +1,162 @@
 ---
-- name: Configure External Handoffs on Border Leaves
+# border_leaf.yml — Configure DMZ handoff on border leaves.
+#
+# This playbook is run ONLY against the two border leaves (first MLAG pair).
+# All variables are injected automatically by inventory.py — no manual
+# host_vars editing is required.
+#
+# Variable reference (set by inventory.py)
+# ─────────────────────────────────────────────────────────────────────────
+# hostname              "Border-1"
+# bgp_asn               65100
+# dmz_handoff_interface "Ethernet5"       ← dynamically computed
+# dmz_handoff_vlan      99                ← config.DMZ_HANDOFF_VLAN
+# dmz_local_ip          "10.99.0.1/30"   ← DMZ_LEAF1_LOCAL_IP or DMZ_LEAF2_LOCAL_IP
+# dmz_fw_peer_ip        "10.99.0.2"      ← FortiGate LAN subinterface IP
+# dmz_fw_asn            65200            ← config.DMZ_FW_ASN
+# dmz_l3_vni            50099            ← VRF_DMZ l3_vni from vlans.py
+#
+# Route-leaking note
+# ─────────────────────────────────────────────────────────────────────────
+# Tenant VRFs (VRF_PEDAGOGY, VRF_RESEARCH) import VRF_DMZ's route-target
+# (50099:50099) in their BGP config, so they receive internet prefixes
+# (e.g. 8.8.8.8/32) that the border leaves learn from the FortiGate.
+# That leaking is configured by configure_switches.py reading vlans.py
+# TENANTS[].import_rts — not by this playbook.
+#
+# This playbook only handles the VRF_DMZ choke-point on border leaves.
+#
+# Redistribution note
+# ─────────────────────────────────────────────────────────────────────────
+# "redistribute bgp" (NOT "redistribute bgp leaked") is used in VRF_DMZ.
+#
+#   redistribute bgp         → re-advertises eBGP-learned routes from the
+#                              FortiGate (e.g. 8.8.8.8/32) as EVPN Type-5,
+#                              making them visible to all other leaves.
+#
+#   redistribute bgp leaked  → would ONLY redistribute routes that were
+#                              *leaked in* from another VRF — which is the
+#                              WRONG set of routes here (those are tenant
+#                              subnets, not internet prefixes).
+
+- name: Configure DMZ Handoff on Border Leaves
   hosts: border_leaves
   gather_facts: no
 
   tasks:
+
     - name: Ensure correct hostname
       arista.eos.eos_config:
         lines:
           - "hostname {{ hostname }}"
 
     # ------------------------------------------------------------------
-    # 1. Parent interface — set to routed mode once.
+    # 1. Parent interface — routed mode (no switchport).
+    #    Safe to re-apply idempotently.
     # ------------------------------------------------------------------
-    - name: Set parent interface to routed mode (no switchport)
+    - name: Set DMZ parent interface to routed mode
       arista.eos.eos_config:
         lines:
           - "no switchport"
           - "no shutdown"
-        parents: "interface {{ item }}"
-      loop: "{{ external_handoffs | map(attribute='interface') | unique | list }}"
+        parents: "interface {{ dmz_handoff_interface }}"
 
     # ------------------------------------------------------------------
-    # 2a. Encapsulation MUST be set before VRF assignment
+    # 2a. 802.1Q encapsulation — MUST be set before VRF assignment.
+    #     EOS wipes the encap when VRF is changed; strict ordering required.
     # ------------------------------------------------------------------
-    - name: Set 802.1Q encapsulation on subinterface
+    - name: Set dot1q encapsulation on DMZ subinterface
       arista.eos.eos_config:
         lines:
-          - "encapsulation dot1q vlan {{ item.vlan }}"
-        parents: "interface {{ item.interface }}.{{ item.vlan }}"
-      loop: "{{ external_handoffs }}"
+          - "encapsulation dot1q vlan {{ dmz_handoff_vlan }}"
+        parents: "interface {{ dmz_handoff_interface }}.{{ dmz_handoff_vlan }}"
 
     # ------------------------------------------------------------------
-    # 2b. VRF assignment — wipes any IP (EOS behavior)
+    # 2b. VRF assignment — wipes any IP configured before this step.
+    #     Keep as a separate task ordered before the IP task.
     # ------------------------------------------------------------------
-    - name: Assign subinterface to VRF
+    - name: Assign DMZ subinterface to VRF_DMZ
       arista.eos.eos_config:
         lines:
-          - "vrf {{ item.vrf }}"
-        parents: "interface {{ item.interface }}.{{ item.vlan }}"
-      loop: "{{ external_handoffs }}"
+          - "vrf VRF_DMZ"
+        parents: "interface {{ dmz_handoff_interface }}.{{ dmz_handoff_vlan }}"
 
     # ------------------------------------------------------------------
-    # 2c. IP after VRF — separate task guarantees order
+    # 2c. IP address — assigned AFTER VRF so it is not wiped.
+    #     Each border leaf uses its own /30 (dmz_local_ip from inventory).
     # ------------------------------------------------------------------
-    - name: Assign IP address to subinterface
+    - name: Assign IP address to DMZ subinterface
       arista.eos.eos_config:
         lines:
-          - "ip address {{ item.local_ip }}"
-        parents: "interface {{ item.interface }}.{{ item.vlan }}"
-      loop: "{{ external_handoffs }}"
+          - "ip address {{ dmz_local_ip }}"
+        parents: "interface {{ dmz_handoff_interface }}.{{ dmz_handoff_vlan }}"
 
     # ------------------------------------------------------------------
-    # 3. eBGP neighbor toward FRR
+    # 3. eBGP neighbor toward the FortiGate (inside VRF_DMZ).
+    #    dmz_fw_peer_ip is the FortiGate's VLAN subinterface IP on the
+    #    same /30 as dmz_local_ip.
     # ------------------------------------------------------------------
-    - name: Configure eBGP neighbor toward external router
+    - name: Configure eBGP neighbor toward FortiGate in VRF_DMZ
       arista.eos.eos_config:
         lines:
-          - "neighbor {{ item.peer_ip }} remote-as {{ item.peer_asn }}"
-          - "neighbor {{ item.peer_ip }} description EXTERNAL_ROUTER"
+          - "neighbor {{ dmz_fw_peer_ip }} remote-as {{ dmz_fw_asn }}"
+          - "neighbor {{ dmz_fw_peer_ip }} description DMZ_FIREWALL"
         parents:
           - "router bgp {{ bgp_asn }}"
-          - "vrf {{ item.vrf }}"
-      loop: "{{ external_handoffs }}"
+          - "vrf VRF_DMZ"
 
-    - name: Activate eBGP neighbor in IPv4 address-family
+    - name: Activate FortiGate neighbor in IPv4 address-family
       arista.eos.eos_config:
         lines:
-          - "neighbor {{ item.peer_ip }} activate"
+          - "neighbor {{ dmz_fw_peer_ip }} activate"
         parents:
           - "router bgp {{ bgp_asn }}"
-          - "vrf {{ item.vrf }}"
+          - "vrf VRF_DMZ"
           - "address-family ipv4"
-      loop: "{{ external_handoffs }}"
 
     # ------------------------------------------------------------------
-    # 4. Route redistribution — tie external BGP to EVPN fabric
+    # 4. EVPN route-targets + redistribution for VRF_DMZ.
     #
-    # CRITICAL FIX: added "redistribute bgp".
-    # "redistribute connected" only pushes directly attached subnets
-    # (the /30 handoff link) into EVPN. It does NOT push BGP-learned
-    # routes received from FRR (e.g. 8.8.8.8/32). Without this line,
-    # Border-1 installs FRR routes in its local VRF table but never
-    # re-advertises them as EVPN type-5 — so no other leaf ever sees
-    # them and pings from tenant servers go nowhere.
+    #    route-target export evpn → EOS automatically exports ALL routes
+    #                               in the VRF BGP table as EVPN Type-5,
+    #                               including eBGP-learned routes from the
+    #                               FortiGate (8.8.8.8/32 etc.).
+    #                               No "redistribute bgp" is needed — that
+    #                               command is invalid inside a VRF BGP
+    #                               context (EOS error: incomplete command).
+    #
+    #    redistribute connected   → additionally announces the /30 DMZ
+    #                               link subnet as EVPN Type-5 so other
+    #                               leaves know how to reach the FW.
     # ------------------------------------------------------------------
-    - name: Redistribute routes between EVPN and external BGP
+    # 4. EVPN route-targets + redistribution for VRF_DMZ.
+    # ------------------------------------------------------------------
+    - name: Bind EVPN route-targets and enable redistribution for VRF_DMZ
       arista.eos.eos_config:
         lines:
-          - "route-target import evpn {{ item.l3_vni }}:{{ item.l3_vni }}"
-          - "route-target export evpn {{ item.l3_vni }}:{{ item.l3_vni }}"
+          - "route-target import evpn {{ dmz_l3_vni }}:{{ dmz_l3_vni }}"
+          - "route-target export evpn {{ dmz_l3_vni }}:{{ dmz_l3_vni }}"
+          - "route-target export vpn-ipv4 {{ dmz_l3_vni }}:{{ dmz_l3_vni }}" # <-- MUST ADD THIS
           - "redistribute connected"
-          - "redistribute bgp leaked"
         parents:
           - "router bgp {{ bgp_asn }}"
-          - "vrf {{ item.vrf }}"
-      loop: "{{ external_handoffs }}"
+          - "vrf VRF_DMZ"
 
-    - name: Save config
+    # ------------------------------------------------------------------
+    # 5. Dynamically leak local BGP routes across VRFs based on vlans.py
+    # ------------------------------------------------------------------
+    - name: Natively leak local BGP routes across VRFs
+      arista.eos.eos_config:
+        lines:
+          - "route-target import vpn-ipv4 {{ item.1 }}:{{ item.1 }}"
+        parents:
+          - "router bgp {{ bgp_asn }}"
+          - "vrf {{ item.0.name }}"
+      loop: "{{ tenants | subelements('import_rts', skip_missing=True) }}"
+
+    # ------------------------------------------------------------------
+    # 6. Persist configuration.
+    # ------------------------------------------------------------------
+    - name: Save running config
       arista.eos.eos_command:
         commands: write memory

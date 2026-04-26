@@ -1,3 +1,29 @@
+#!/usr/bin/env python3
+"""
+config_frr.py — Configure the FRR (Debian) internet simulator via GNS3 telnet.
+
+Architecture change from the original
+───────────────────────────────────────────────────────────────────────────────
+Previously FRR peered directly with the border leaf over VLAN subinterfaces.
+With the DMZ in place the topology is now:
+
+  FRR  ←→  FortiGate (WAN)  ←→  FortiGate (LAN)  ←→  Border leaves
+
+FRR no longer talks to the border leaves at all.  It only peers with the
+FortiGate WAN port(s).  Because the FortiGate WAN port is a plain L3
+interface (no 802.1Q), FRR also uses plain physical interfaces — no VLAN
+subinterfaces.
+
+Interface mapping (GNS3 adapter → Linux interface)
+───────────────────────────────────────────────────
+  adapter 0  →  enp2s0  management
+  adapter 1  →  ens1    FW-1 WAN  (always present)
+  adapter 2  →  ens2    FW-2 WAN  (dual-FW mode only)
+
+FRR advertises INTERNET_PREFIX (8.8.8.8/32) and assigns INTERNET_IP to lo
+so the prefix is actually pingable — validating end-to-end reachability.
+"""
+
 from netmiko import ConnectHandler
 import requests
 import time
@@ -6,211 +32,272 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-import sots.config as config
-import sots.vlans as vlans
+import sots.config as cfg
 
-FRR_NODE_NAME   = "Server-1"
-FRR_IFACE       = "ens1"
-# INTERNET_PREFIX is what FRR advertises into BGP.
-# It must also be assigned as an IP on lo so pings to it are answered.
-# Both the /32 route AND the IP address are added below.
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+FRR_NODE_NAME = "Server-1"
+
+# Management interface inside the Debian VM.
+MGMT_IFACE = "enp2s0"
+
+# Data interfaces — plain physical (no VLAN tags, matching FortiGate WAN).
+FRR_IFACE_1 = "ens1"   # always: faces FW-1 WAN
+FRR_IFACE_2 = "ens2"   # dual-FW only: faces FW-2 WAN
+
+# The prefix FRR originates into BGP and assigns to lo (makes it pingable).
 INTERNET_PREFIX = "8.8.8.8/32"
-INTERNET_IP     = "8.8.8.8"       # assigned to lo — makes it pingable
+INTERNET_IP     = "8.8.8.8"
 
-BORDER_LEAF_ASN = config.LEAF_AS_BASE  # Border-1 is leaf index 0 → LEAF_AS_BASE + 0
+# FRR's own BGP ASN — must match FRR_ASN in config_firewalls.py.
+FRR_ASN = 65999
+
+# ---------------------------------------------------------------------------
+# Derived addressing from config.py
+# ---------------------------------------------------------------------------
+
+def _ip(cidr: str) -> str:
+    return cidr.split("/")[0]
+
+def _prefix_len(cidr: str) -> str:
+    return cidr.split("/")[1]
 
 
-def get_gns3_host_and_port(node_name):
+# FRR's own IP + prefix length on each WAN link.
+FRR_IP1_CIDR = f"{cfg.DMZ_FRR_IP1}/{_prefix_len(cfg.DMZ_FW1_WAN_IP)}"
+FRR_IP2_CIDR = f"{cfg.DMZ_FRR_IP2}/{_prefix_len(cfg.DMZ_FW2_WAN_IP)}"
+
+# Firewall WAN IPs that FRR peers with.
+FW1_WAN_IP   = _ip(cfg.DMZ_FW1_WAN_IP)
+FW2_WAN_IP   = _ip(cfg.DMZ_FW2_WAN_IP)
+
+# FortiGate ASN (FRR's remote-as for both FW peers).
+FW_ASN = cfg.DMZ_FW_ASN
+
+
+# ---------------------------------------------------------------------------
+# GNS3 console discovery
+# ---------------------------------------------------------------------------
+
+def get_gns3_console(node_name: str):
     session = requests.Session()
 
-    print("Authenticating with GNS3...")
-    auth_response = session.post(f"{config.GNS3_SERVER}/access/users/login", data={
-        "username": config.GNS3_USER,
-        "password": config.GNS3_PASSWORD
+    resp = session.post(f"{cfg.GNS3_SERVER}/access/users/login", data={
+        "username": cfg.GNS3_USER,
+        "password": cfg.GNS3_PASSWORD,
     })
-    if auth_response.status_code != 200:
-        raise RuntimeError(f"GNS3 authentication failed: {auth_response.text}")
-
-    auth_data = auth_response.json()
-    token = auth_data.get("access_token") or auth_data.get("token")
+    if resp.status_code != 200:
+        raise RuntimeError(f"GNS3 auth failed: {resp.text}")
+    token = (resp.json().get("access_token") or resp.json().get("token"))
     if token:
         session.headers.update({"Authorization": f"Bearer {token}"})
 
-    server_ip = config.GNS3_SERVER.split("://")[1].split(":")[0]
+    api_host = cfg.GNS3_SERVER.split("://", 1)[1].split("/", 1)[0].split(":", 1)[0]
 
-    projects_resp = session.get(f"{config.GNS3_SERVER}/projects")
-    if projects_resp.status_code != 200:
-        raise RuntimeError(f"Failed to get projects: {projects_resp.text}")
+    projects = session.get(f"{cfg.GNS3_SERVER}/projects").json()
+    project  = next((p for p in projects if p["name"] == cfg.PROJECT_NAME), None)
+    if not project:
+        raise RuntimeError(f"Project '{cfg.PROJECT_NAME}' not found.")
+    project_id = project["project_id"]
 
-    projects   = projects_resp.json()
-    project_id = next((p["project_id"] for p in projects if p["name"] == config.PROJECT_NAME), None)
-    if not project_id:
-        raise RuntimeError(f"Project '{config.PROJECT_NAME}' not found.")
+    computes      = session.get(f"{cfg.GNS3_SERVER}/computes").json()
+    compute_by_id = {c.get("compute_id"): c for c in computes if c.get("compute_id")}
 
-    nodes_resp = session.get(f"{config.GNS3_SERVER}/projects/{project_id}/nodes")
-    for node in nodes_resp.json():
+    nodes = session.get(f"{cfg.GNS3_SERVER}/projects/{project_id}/nodes").json()
+    for node in nodes:
         if node["name"] == node_name:
-            return server_ip, node["console"]
+            compute = compute_by_id.get(node.get("compute_id"), {})
+            host = (
+                compute.get("host") or compute.get("address")
+                or compute.get("ip_address") or compute.get("ip") or ""
+            ).strip()
+            if host in ("", "0.0.0.0", "::", "localhost", "127.0.0.1"):
+                host = api_host
+            return host, node["console"]
 
     raise RuntimeError(f"Node '{node_name}' not found in project.")
 
 
-def wait_for_telnet(host, port, retries=5, delay=2):
-    for _ in range(retries):
+def wait_for_telnet(host, port, retries=10, delay=10):
+    for attempt in range(retries):
         try:
-            with socket.create_connection((host, port), timeout=2):
+            with socket.create_connection((host, port), timeout=3):
                 return True
         except (ConnectionRefusedError, socket.timeout, OSError):
+            print(f"  Waiting for telnet {host}:{port} ({attempt+1}/{retries})...")
             time.sleep(delay)
     return False
 
 
-def configure_debian_telnet():
+# ---------------------------------------------------------------------------
+# Main configuration
+# ---------------------------------------------------------------------------
+
+def configure_frr():
     try:
-        host, port = get_gns3_host_and_port(FRR_NODE_NAME)
+        host, port = get_gns3_console(FRR_NODE_NAME)
         print(f"Found {FRR_NODE_NAME} console at telnet://{host}:{port}")
     except Exception as e:
         print(f"Error fetching GNS3 details: {e}")
         return
 
     if not wait_for_telnet(host, port):
-        print(f"Telnet port {port} is not reachable.")
+        print(f"Telnet {host}:{port} unreachable.")
         return
 
+    print(f"Connecting to {FRR_NODE_NAME} console...")
     try:
-        print(f"Connecting to {FRR_NODE_NAME} console...")
-        net_connect = ConnectHandler(**{
-            'device_type':         'generic_termserver_telnet',
-            'host':                host,
-            'port':                port,
-            'global_delay_factor': 2,
+        conn = ConnectHandler(**{
+            "device_type":         "generic_termserver_telnet",
+            "host":                host,
+            "port":                port,
+            "global_delay_factor": 2,
         })
-
-        print("Waking up console...")
-        net_connect.write_channel("\n\n")
-        time.sleep(2)
-        output = net_connect.read_channel()
-
-        if "login:" in output.lower():
-            net_connect.write_channel("root\n")
-            time.sleep(1)
-            net_connect.write_channel("root\n")
-            time.sleep(2)
-
     except Exception as e:
-        print(f"Failed to connect via Telnet: {e}")
+        print(f"Connection failed: {e}")
         return
 
-    # ---------------------------------------------------------
-    # 1. Linux OS commands
-    # ---------------------------------------------------------
-    mgmt_ip = f"{config.MGMT_BASE_IP}.{config.MGMT_START + config.NUM_SPINES + config.NUM_LEAVES}"
+    # Wake console and log in.
+    conn.write_channel("\n\n")
+    time.sleep(2)
+    out = conn.read_channel()
+
+    if "login:" in out.lower():
+        conn.write_channel("root\n")
+        time.sleep(1)
+        out = conn.read_channel()
+
+    if "password:" in out.lower():
+        conn.write_channel("root\n")
+        time.sleep(2)
+
+    # ──────────────────────────────────────────────────────────────────
+    # 1. Linux interface configuration
+    # ──────────────────────────────────────────────────────────────────
+    mgmt_ip = (
+        f"{cfg.MGMT_BASE_IP}."
+        f"{cfg.MGMT_START + cfg.NUM_SPINES + cfg.NUM_LEAVES}"
+    )
+
     linux_cmds = [
-        # Management interface
-        f"ip addr add {mgmt_ip}/24 dev enp2s0 2>/dev/null || true",
+        # Management
+        f"ip addr add {mgmt_ip}/24 dev {MGMT_IFACE} 2>/dev/null || true",
         "systemctl enable ssh",
         "systemctl start ssh",
 
-
-        # Physical interface up
-        "modprobe 8021q",
-        f"ip link set {FRR_IFACE} up",
-
-        # CRITICAL FIX: assign the advertised IP to lo so pings are answered.
-        # "ip route add 8.8.8.8/32 dev lo" only adds a routing entry — it does
-        # NOT assign 8.8.8.8 as an address. Pings arriving at FRR destined for
-        # 8.8.8.8 would be delivered to lo but immediately discarded because no
-        # process owns that address. "ip addr add" makes lo own it.
+        # Assign 8.8.8.8 to lo so pings arriving here are answered.
+        # "ip addr add" owns the address; "ip route add ... dev lo" alone
+        # does NOT — incoming packets would be silently dropped.
         f"ip addr add {INTERNET_IP}/32 dev lo 2>/dev/null || true",
+
+        # WAN interface toward FW-1
+        f"ip link set {FRR_IFACE_1} up",
+        f"ip addr add {FRR_IP1_CIDR} dev {FRR_IFACE_1} 2>/dev/null || true",
     ]
 
-    # Subinterface setup per tenant
-    for tenant in vlans.TENANTS:
-        if not tenant.get("external_handoff"):
-            continue
-        vlan_id = tenant["handoff_vlan"]
-        peer_ip = tenant["handoff_peer_ip"]
-        mask    = tenant["handoff_local_ip"].split('/')[1]
-        iface   = f"{FRR_IFACE}.{vlan_id}"
-        linux_cmds.extend([
-            f"ip link add link {FRR_IFACE} name {iface} type vlan id {vlan_id} 2>/dev/null || true",
-            f"ip link set {iface} up",
-            f"ip addr add {peer_ip}/{mask} dev {iface} 2>/dev/null || true",
-        ])
+    if cfg.BORDER_FIREWALL_COUNT == 2:
+        # Second WAN interface toward FW-2
+        linux_cmds += [
+            f"ip link set {FRR_IFACE_2} up",
+            f"ip addr add {FRR_IP2_CIDR} dev {FRR_IFACE_2} 2>/dev/null || true",
+        ]
 
-    # ---------------------------------------------------------
-    # 2. FRR vtysh config
-    #    No "configure terminal" or "end" — invalid in vtysh -f mode.
-    #    Single address-family block containing ALL neighbor activates.
-    # ---------------------------------------------------------
-    frr_asn = next(
-        (t["handoff_peer_asn"] for t in vlans.TENANTS if t.get("external_handoff")),
-        65999
-    )
+    # ──────────────────────────────────────────────────────────────────
+    # 2. FRR BGP configuration (vtysh -f)
+    #
+    # FRR peers with the FortiGate WAN port(s).
+    # It does NOT peer with border leaves directly.
+    #
+    # "no bgp ebgp-requires-policy" disables the strict inbound/outbound
+    # route-map requirement that would otherwise block all advertisements.
+    # ──────────────────────────────────────────────────────────────────
 
-    neighbor_lines = []
-    activate_lines = []
-    for tenant in vlans.TENANTS:
-        if not tenant.get("external_handoff"):
-            continue
-        leaf_ip = tenant["handoff_local_ip"].split('/')[0]
-        neighbor_lines.extend([
-            f" neighbor {leaf_ip} remote-as {BORDER_LEAF_ASN}",
-            f" neighbor {leaf_ip} description Border-1-{tenant['name']}",
-        ])
-        activate_lines.append(f"  neighbor {leaf_ip} activate")
+    neighbor_lines  = []
+    activate_lines  = []
+
+    # FW-1 WAN peer (always present)
+    neighbor_lines += [
+        f" neighbor {FW1_WAN_IP} remote-as {FW_ASN}",
+        f" neighbor {FW1_WAN_IP} description FW-1-WAN",
+    ]
+    activate_lines.append(f"  neighbor {FW1_WAN_IP} activate")
+
+    if cfg.BORDER_FIREWALL_COUNT == 2:
+        # FW-2 WAN peer
+        neighbor_lines += [
+            f" neighbor {FW2_WAN_IP} remote-as {FW_ASN}",
+            f" neighbor {FW2_WAN_IP} description FW-2-WAN",
+        ]
+        activate_lines.append(f"  neighbor {FW2_WAN_IP} activate")
 
     vtysh_lines = (
         [
-            f"router bgp {frr_asn}",
+            f"router bgp {FRR_ASN}",
             f" no bgp ebgp-requires-policy",
         ]
         + neighbor_lines
-        + [f" address-family ipv4 unicast"]
+        + ["  address-family ipv4 unicast"]
         + activate_lines
         + [
-            # Advertise the internet prefix — FRR will only announce this if
-            # the address exists locally (ensured by ip addr add above)
+            # FRR originates 8.8.8.8/32 — only announced when the address
+            # exists locally (guaranteed by "ip addr add" to lo above).
             f"  network {INTERNET_PREFIX}",
-            f" exit-address-family",
+            " exit-address-family",
         ]
     )
 
     frr_config_text = "\n".join(vtysh_lines)
 
-    # ---------------------------------------------------------
-    # 3. Execute Linux commands
-    # ---------------------------------------------------------
-    print("\n--- Applying Linux Interface Configs ---")
+    # ──────────────────────────────────────────────────────────────────
+    # 3. Apply Linux commands
+    # ──────────────────────────────────────────────────────────────────
+    print("\n--- Applying Linux interface config ---")
     for cmd in linux_cmds:
-        net_connect.write_channel(cmd + "\n")
+        conn.write_channel(cmd + "\n")
         time.sleep(0.5)
         print(f"  {cmd}")
 
-    # ---------------------------------------------------------
-    # 4. Write and apply FRR config
-    # ---------------------------------------------------------
-    print("\n--- Applying FRR BGP Configs via vtysh -f ---")
-    bash_script = f"""cat << 'FRREOF' > /tmp/frr_bgp.conf
-{frr_config_text}
-FRREOF
-vtysh -f /tmp/frr_bgp.conf
-vtysh -c "write memory"
-"""
-    for line in bash_script.split('\n'):
-        net_connect.write_channel(line + "\n")
-        time.sleep(0.1)
+    # ──────────────────────────────────────────────────────────────────
+    # 4. Write and apply FRR config via vtysh -f
+    # ──────────────────────────────────────────────────────────────────
+    print("\n--- Applying FRR BGP config via vtysh -f ---")
+    bash_script = (
+        "cat << 'FRREOF' > /tmp/frr_bgp.conf\n"
+        + frr_config_text
+        + "\nFRREOF\n"
+        "vtysh -f /tmp/frr_bgp.conf\n"
+        "vtysh -c 'write memory'\n"
+    )
+    for line in bash_script.split("\n"):
+        conn.write_channel(line + "\n")
+        time.sleep(0.15)
 
     time.sleep(3)
-    output = net_connect.read_channel()
-    if output.strip():
-        print(output)
+    out = conn.read_channel()
+    if out.strip():
+        print(out)
 
-    net_connect.disconnect()
-    print("\n✅ FRR Configuration Applied Successfully!")
-    print(f"\nPingable targets from tenant servers:")
-    print(f"  {INTERNET_IP}  (advertised internet prefix)")
+    conn.disconnect()
+
+    print("\n✅ FRR configured successfully!")
+    print(f"\nFRR BGP peers:")
+    print(f"  {FW1_WAN_IP}  (FW-1 WAN)  remote-as {FW_ASN}")
+    if cfg.BORDER_FIREWALL_COUNT == 2:
+        print(f"  {FW2_WAN_IP}  (FW-2 WAN)  remote-as {FW_ASN}")
+    print(f"\nAdvertised prefix: {INTERNET_PREFIX}")
+    print(f"Pingable target:   {INTERNET_IP}  (assigned to lo)")
+    print(f"\nFRR interface IPs:")
+    print(f"  {FRR_IFACE_1}  {FRR_IP1_CIDR}")
+    if cfg.BORDER_FIREWALL_COUNT == 2:
+        print(f"  {FRR_IFACE_2}  {FRR_IP2_CIDR}")
 
 
 if __name__ == "__main__":
-    configure_debian_telnet()
+    if cfg.BORDER_FIREWALL_COUNT == 0:
+        print("BORDER_FIREWALL_COUNT is 0 — no DMZ, FRR connects directly to border leaf.")
+        print("Use the legacy config_frr.py for that mode.")
+        sys.exit(1)
+
+    configure_frr()
