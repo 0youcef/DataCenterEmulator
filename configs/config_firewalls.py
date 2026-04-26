@@ -394,7 +394,11 @@ def configure_fortigate(plan: dict, console_host: str, console_port: int):
 
         print("  Purging old policies to free up interfaces...")
         _send(conn, "config firewall policy")
-        _send(conn, "    purge")
+        purge_out = _send(conn, "    purge")
+        purge_out_l = purge_out.lower()
+        if "do you want to continue" in purge_out_l or "(y/n)" in purge_out_l:
+            print("    Purge requested confirmation; sending 'y'.")
+            _send(conn, "y")
         _send(conn, "end")
         print("  Configuring zones...")
         _send(conn, "config system zone")
