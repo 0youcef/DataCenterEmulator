@@ -41,7 +41,7 @@ def get_server_mgmt_ips():
 # ----------------------------------------------------------------
 
 def get_gns3_console(node_name):
-    """Return (server_ip, console_port) for a GNS3 node, supporting remote computes."""
+    """Return (server_ip, console_port) for a GNS3 node."""
     session = requests.Session()
 
     print(f"  Authenticating with GNS3...")
@@ -56,8 +56,7 @@ def get_gns3_console(node_name):
     if token:
         session.headers.update({"Authorization": f"Bearer {token}"})
 
-    # Get the base API host as a fallback
-    api_host = config.GNS3_SERVER.split("://", 1)[1].split("/", 1)[0].split(":", 1)[0]
+    server_ip = config.GNS3_SERVER.split("://")[1].split(":")[0]
 
     projects_resp = session.get(f"{config.GNS3_SERVER}/projects")
     if projects_resp.status_code != 200:
@@ -70,31 +69,10 @@ def get_gns3_console(node_name):
     if not project_id:
         raise RuntimeError(f"Project '{config.PROJECT_NAME}' not found.")
 
-    # Build compute lookups to find the correct remote IP
-    computes_resp = session.get(f"{config.GNS3_SERVER}/computes")
-    if computes_resp.status_code != 200:
-        raise RuntimeError(f"Failed to get computes: {computes_resp.text}")
-    computes = computes_resp.json()
-    compute_by_id = {c.get("compute_id"): c for c in computes if c.get("compute_id")}
-
     nodes_resp = session.get(f"{config.GNS3_SERVER}/projects/{project_id}/nodes")
     for node in nodes_resp.json():
         if node["name"] == node_name:
-            # Extract compute details for this specific node
-            compute = compute_by_id.get(node.get("compute_id"), {})
-            host = (
-                compute.get("host")
-                or compute.get("address")
-                or compute.get("ip_address")
-                or compute.get("ip")
-                or ""
-            ).strip()
-            
-            # Fall back to the API server IP if the compute registers as local
-            if host in ("", "0.0.0.0", "::", "localhost", "127.0.0.1"):
-                host = api_host
-                
-            return host, node["console"]
+            return server_ip, node["console"]
 
     raise RuntimeError(f"Node '{node_name}' not found in project.")
 
