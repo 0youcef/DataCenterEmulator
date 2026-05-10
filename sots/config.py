@@ -15,8 +15,8 @@ TEMPLATE_NAME_FRR     = "Debian Server"
 TEMPLATE_NAME_PROXMOX = "Proxmox VE"
 
 NUM_SPINES  = 2
-NUM_LEAVES  = 3
-NUM_SERVERS = 2
+NUM_LEAVES  = 8
+NUM_SERVERS = 4
 
 MGMT_BASE_IP = "172.20.20"
 MGMT_START   = 10
@@ -35,8 +35,8 @@ SSH_PASS = "admin"
 #
 # The names must exactly match the compute names shown in GNS3 preferences.
 COMPUTE_SPINES  = ["local"]          # round-robined across all spines
-COMPUTE_LEAVES  = ["local"]          # round-robined across all leaves
-COMPUTE_SERVERS = ["local"]          # round-robined across all servers
+COMPUTE_LEAVES  = ["local","local"]          # round-robined across all leaves
+COMPUTE_SERVERS = ["local","local","local"]          # round-robined across all servers
 
 # --- Underlay ---
 FABRIC_SUBNET     = "10.0.0"   # Base for P2P /31 links: 10.0.0.0/31, 10.0.0.2/31, ...
@@ -52,7 +52,7 @@ VTEP_SUBNET     = "10.254.0"   # Base for per-leaf VTEP /32 addresses: .1, .2, .
 VXLAN_INTERFACE = "Vxlan1"
 
 # --- MLAG ---
-MLAG_PAIRS                   = []
+MLAG_PAIRS                   = [[1,2],[3,4],[5,6],[7,8]]
 MLAG_DOMAIN_PREFIX           = "MLAG"
 MLAG_PEER_LINK_CHANNEL       = 2000
 MLAG_PEER_LINK_MEMBER_COUNT  = 2

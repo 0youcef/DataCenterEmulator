@@ -62,6 +62,8 @@ validate_compute_list("COMPUTE_SPINES",  COMPUTE_SPINES)
 validate_compute_list("COMPUTE_LEAVES",  COMPUTE_LEAVES)
 validate_compute_list("COMPUTE_SERVERS", COMPUTE_SERVERS)
 
+if not MLAG_PAIRS:
+    raise RuntimeError("MLAG_PAIRS must be non-empty — first pair defines the border leaves.")
 
 print("Authenticating with GNS3 API...")
 gns3 = GNS3Client(GNS3_SERVER, GNS3_USER, GNS3_PASSWORD)
@@ -165,25 +167,63 @@ try:
             deploy(template_id_arista, compute_id, f"Leaf-{i+1}", i * 200, 100)
         )
 
+    # ------------------------------------------------------------------
+    # Derive border and compute leaf lists from MLAG_PAIRS.
+    #
+    # MLAG_PAIRS[0]   → border leaves (the two leaves that dual-home
+    #                   Server-1 / FRR and carry external handoffs).
+    # MLAG_PAIRS[1:]  → compute MLAG pairs that host Proxmox servers.
+    #
+    # All indices in MLAG_PAIRS are 1-based (matching Leaf-N names).
+    # ------------------------------------------------------------------
+    _bl_idx, _br_idx  = parse_mlag_pair(MLAG_PAIRS[0], 1)
+    border_left_leaf  = leaves[_bl_idx - 1]
+    border_right_leaf = leaves[_br_idx - 1]
+
+    # Flat, ordered list of leaves belonging to non-border MLAG pairs.
+    # Server-2+ are round-robined across this list, so they always land
+    # on an MLAG pair (never on a standalone leaf or a border leaf).
+    compute_leaf_list = []
+    for _pair_num, _pair in enumerate(MLAG_PAIRS[1:], start=2):
+        _l, _r = parse_mlag_pair(_pair, _pair_num)
+        compute_leaf_list.extend([leaves[_l - 1], leaves[_r - 1]])
+
+    if not compute_leaf_list:
+        raise RuntimeError(
+            "No compute MLAG pairs found (MLAG_PAIRS has only one entry). "
+            "Add at least one more pair for Proxmox servers."
+        )
+
     print("Spawning Servers...")
     leaf_server_count = {}
-    for i in range(NUM_SERVERS):
-        leaf   = leaves[i % NUM_LEAVES]
+
+    # ── Server-1: FRR internet simulator ──────────────────────────────
+    # Positioned horizontally between the two border leaves.
+    # Gets TWO fabric uplinks (one to each border leaf) — see section 6.
+    _frr_x = (border_left_leaf["x"] + border_right_leaf["x"]) // 2
+    servers.append(
+        deploy(
+            template_id_frr,
+            compute_ids_servers[0 % len(compute_ids_servers)],
+            "Server-1",
+            _frr_x,
+            300,
+        )
+    )
+
+    # ── Server-2+: Proxmox compute nodes ──────────────────────────────
+    # Round-robined across compute_leaf_list (MLAG_PAIRS[1:]).
+    # Server-2 always lands on the first leaf of the second MLAG pair.
+    for i in range(1, NUM_SERVERS):
+        leaf   = compute_leaf_list[(i - 1) % len(compute_leaf_list)]
         leaf_x = leaf["x"]
         count  = leaf_server_count.get(leaf["node_id"], 0)
         leaf_server_count[leaf["node_id"]] = count + 1
-
-        # Round-robin across COMPUTE_SERVERS list.
-        # Server-1 (i == 0) always uses the Debian/FRR template regardless
-        # of which compute it lands on.
-        compute_id  = compute_ids_servers[i % len(compute_ids_servers)]
-        template_id = template_id_frr if i == 0 else template_id_proxmox
-
         servers.append(
             deploy(
-                template_id,
-                compute_id,
-                f"Server-{i+1}",
+                template_id_proxmox,
+                compute_ids_servers[i % len(compute_ids_servers)],
+                f"Server-{i + 1}",
                 leaf_x,
                 300 + count * 150,
             )
@@ -224,9 +264,26 @@ try:
             next_adapter[spine["node_id"]] += 1
 
     print("\nLinking Servers to Leaves...")
-    for i, server in enumerate(servers):
-        leaf = leaves[i % NUM_LEAVES]
-        sa, la = next_adapter[server["node_id"]], next_adapter[leaf["node_id"]]
+
+    # ── Server-1 (FRR): dual uplinks to both border leaves ────────────
+    # This gives the FRR node two fabric interfaces (ens1 → Border-1,
+    # ens2 → Border-2) so config_frr.py can peer with both.
+    _frr = servers[0]
+    for _bl in [border_left_leaf, border_right_leaf]:
+        _sa = next_adapter[_frr["node_id"]]
+        _la = next_adapter[_bl["node_id"]]
+        gns3.create_link(project_id, _frr["node_id"], _sa, _bl["node_id"], _la)
+        print(f" -> {_frr['name']} (Eth{_sa}) <---> {_bl['name']} (Eth{_la})")
+        next_adapter[_frr["node_id"]] += 1
+        next_adapter[_bl["node_id"]]  += 1
+
+    # ── Server-2+ (Proxmox): single uplink, round-robined across ──────
+    # compute_leaf_list (MLAG_PAIRS[1:]).  Server-2 always connects to
+    # the first leaf of the second MLAG pair, matching the spawn order.
+    for i, server in enumerate(servers[1:]):
+        leaf = compute_leaf_list[i % len(compute_leaf_list)]
+        sa   = next_adapter[server["node_id"]]
+        la   = next_adapter[leaf["node_id"]]
         gns3.create_link(project_id, server["node_id"], sa, leaf["node_id"], la)
         print(f" -> {server['name']} (Eth{sa}) <---> {leaf['name']} (Eth{la})")
         next_adapter[server["node_id"]] += 1
