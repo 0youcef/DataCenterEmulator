@@ -27,11 +27,10 @@ sudo ip addr add 172.20.20.1/24 dev br0
 sudo setcap cap_net_admin,cap_net_raw=eip /usr/bin/ubridge
 ```
 
-
-
 ### Management IP assignment
 
 IPs are assigned sequentially starting from `MGMT_BASE_IP.MGMT_START`:
+
 - Spine-1 → `.10`, Spine-2 → `.11`
 - Leaf-1 → `.12`, Leaf-2 → `.13`, Leaf-3 → `.14`
 - Servers are not assigned IPs by the scripts (ESXi manages its own via DCUI)
@@ -58,9 +57,10 @@ All compute machines need the same images in `~/GNS3/images/QEMU/`.
 python topology/deploy_fabric.py
 ```
 
-This creates the GNS3 project, spawns all nodes, wires the spine-leaf fabric, connects everything to a management switch bridged to `br0`, and starts all nodes. The script waits for a keypress before closing the project.
+This creates the GNS3 project, spawns all nodes, wires the spine-leaf fabric, deploys an OPNsense firewall with WAN/LAN/DMZ links, connects everything to a management switch bridged to `br0`, and starts all nodes. The script waits for a keypress before closing the project.
 
 **Topology layout:**
+
 ```
          Cloud (br0)
              |
@@ -80,12 +80,22 @@ Each spine is wired to every leaf (full mesh). Servers connect to leaves in roun
 Run after nodes have booted (vEOS takes 1-3 minutes):
 
 ```bash
-python config/config_switches.py
+python configs/config_switches.py
 ```
 
 Connects to each switch via its GNS3 console port over Telnet, sets the hostname, configures Management1 IP, enables IP routing, eAPI (HTTPS), and SSH. The script polls the console port automatically and waits for the switch to be ready before connecting.
 
-### 3. Configure switches via Ansible (eAPI)
+### 3. Configure OPNsense firewall (Telnet)
+
+After switches are reachable, configure firewall interfaces (WAN/LAN/DMZ) and base DMZ policy:
+
+```bash
+python configs/config_firewalls.py
+```
+
+All firewall parameters are in `sots/config.py` (template name, interface names, credentials, subnets, exposed DMZ host/ports).
+
+### 4. Configure switches via Ansible (eAPI)
 
 After step 2, switches are reachable via eAPI. Run a playbook:
 
@@ -99,7 +109,7 @@ ansible-playbook -i inventory.py border_leaf.yml
 
 The dynamic inventory (`inventory.py`) reads `config.py` and builds the host list automatically — no hardcoded IPs or hostnames. Uses `httpapi` connection over HTTPS port 443.
 
-### 4. Add nodes to a running topology
+### 5. Add nodes to a running topology
 
 ```bash
 python add_node.py spine

@@ -11,15 +11,22 @@ from sots.config import (
     TEMPLATE_NAME_ARISTA,
     TEMPLATE_NAME_FRR,
     TEMPLATE_NAME_PROXMOX,
+    TEMPLATE_NAME_FIREWALL,
     NUM_SPINES,
     NUM_LEAVES,
     NUM_SERVERS,
-    COMPUTE_SPINES,    # list — round-robined across spines
-    COMPUTE_LEAVES,    # list — round-robined across leaves
-    COMPUTE_SERVERS,   # list — round-robined across servers
+    COMPUTE_SPINES,  # list — round-robined across spines
+    COMPUTE_LEAVES,  # list — round-robined across leaves
+    COMPUTE_SERVERS,  # list — round-robined across servers
+    COMPUTE_FIREWALLS,  # list — round-robined across firewalls
     MGMT_BRIDGE,
     MLAG_PAIRS,
     MLAG_PEER_LINK_MEMBER_COUNT,
+    ENABLE_DMZ_FIREWALL,
+    FIREWALL_NODE_NAME,
+    FIREWALL_WAN_UPSTREAM_NODE_NAME,
+    FIREWALL_LAN_BORDER_LEAF_INDEX,
+    FIREWALL_DMZ_BORDER_LEAF_INDEX,
 )
 
 
@@ -40,7 +47,7 @@ def parse_mlag_pair(pair, pair_number):
         )
 
     try:
-        left_idx  = int(parts[0])
+        left_idx = int(parts[0])
         right_idx = int(parts[1])
     except ValueError as exc:
         raise RuntimeError(
@@ -58,12 +65,16 @@ def validate_compute_list(name, lst):
         )
 
 
-validate_compute_list("COMPUTE_SPINES",  COMPUTE_SPINES)
-validate_compute_list("COMPUTE_LEAVES",  COMPUTE_LEAVES)
+validate_compute_list("COMPUTE_SPINES", COMPUTE_SPINES)
+validate_compute_list("COMPUTE_LEAVES", COMPUTE_LEAVES)
 validate_compute_list("COMPUTE_SERVERS", COMPUTE_SERVERS)
+if ENABLE_DMZ_FIREWALL:
+    validate_compute_list("COMPUTE_FIREWALLS", COMPUTE_FIREWALLS)
 
 if not MLAG_PAIRS:
-    raise RuntimeError("MLAG_PAIRS must be non-empty — first pair defines the border leaves.")
+    raise RuntimeError(
+        "MLAG_PAIRS must be non-empty — first pair defines the border leaves."
+    )
 
 print("Authenticating with GNS3 API...")
 gns3 = GNS3Client(GNS3_SERVER, GNS3_USER, GNS3_PASSWORD)
@@ -80,7 +91,7 @@ try:
     if project is None:
         print(f"Project '{PROJECT_NAME}' already exists. Deleting and recreating...")
         projects = gns3.get_projects()
-        old_id   = next(p["project_id"] for p in projects if p["name"] == PROJECT_NAME)
+        old_id = next(p["project_id"] for p in projects if p["name"] == PROJECT_NAME)
         gns3.delete_project(old_id)
         project = gns3.create_project(PROJECT_NAME)
 
@@ -94,7 +105,7 @@ try:
     # 2. Resolve compute names → IDs
     # ==========================================
     print("Loading computes...")
-    computes    = gns3.get_computes()
+    computes = gns3.get_computes()
     compute_map = {c["name"]: c["compute_id"] for c in computes}
     compute_map["local"] = "local"
 
@@ -109,9 +120,12 @@ try:
         """Resolve a list of compute names, validating each one exists."""
         return [resolve(n) for n in names]
 
-    compute_ids_spines  = resolve_list(COMPUTE_SPINES)
-    compute_ids_leaves  = resolve_list(COMPUTE_LEAVES)
+    compute_ids_spines = resolve_list(COMPUTE_SPINES)
+    compute_ids_leaves = resolve_list(COMPUTE_LEAVES)
     compute_ids_servers = resolve_list(COMPUTE_SERVERS)
+    compute_ids_firewalls = (
+        resolve_list(COMPUTE_FIREWALLS) if ENABLE_DMZ_FIREWALL else []
+    )
 
     print(f"Spine  computes: {COMPUTE_SPINES}")
     print(f"Leaf   computes: {COMPUTE_LEAVES}")
@@ -128,20 +142,27 @@ try:
             raise RuntimeError(f"Template '{name}' not found in GNS3!")
         return tid
 
-    template_id_arista  = get_template_id(TEMPLATE_NAME_ARISTA)
-    template_id_frr     = get_template_id(TEMPLATE_NAME_FRR)
+    template_id_arista = get_template_id(TEMPLATE_NAME_ARISTA)
+    template_id_frr = get_template_id(TEMPLATE_NAME_FRR)
     template_id_proxmox = get_template_id(TEMPLATE_NAME_PROXMOX)
+    template_id_firewall = (
+        get_template_id(TEMPLATE_NAME_FIREWALL) if ENABLE_DMZ_FIREWALL else None
+    )
 
     print(f"Template {TEMPLATE_NAME_ARISTA}:  {template_id_arista}")
     print(f"Template {TEMPLATE_NAME_FRR}:     {template_id_frr}")
-    print(f"Template {TEMPLATE_NAME_PROXMOX}: {template_id_proxmox}\n")
+    print(f"Template {TEMPLATE_NAME_PROXMOX}: {template_id_proxmox}")
+    if ENABLE_DMZ_FIREWALL:
+        print(f"Template {TEMPLATE_NAME_FIREWALL}: {template_id_firewall}")
+    print()
 
     # ==========================================
     # 4. Spawn nodes
     # ==========================================
-    spines       = []
-    leaves       = []
-    servers      = []
+    spines = []
+    leaves = []
+    servers = []
+    firewalls = []
     next_adapter = {}
 
     def deploy(template_id, compute_id, name, x, y):
@@ -167,6 +188,18 @@ try:
             deploy(template_id_arista, compute_id, f"Leaf-{i+1}", i * 200, 100)
         )
 
+    if ENABLE_DMZ_FIREWALL:
+        print("Spawning Firewall...")
+        firewalls.append(
+            deploy(
+                template_id_firewall,
+                compute_ids_firewalls[0 % len(compute_ids_firewalls)],
+                FIREWALL_NODE_NAME,
+                (NUM_LEAVES * 200) // 2,
+                500,
+            )
+        )
+
     # ------------------------------------------------------------------
     # Derive border and compute leaf lists from MLAG_PAIRS.
     #
@@ -176,9 +209,18 @@ try:
     #
     # All indices in MLAG_PAIRS are 1-based (matching Leaf-N names).
     # ------------------------------------------------------------------
-    _bl_idx, _br_idx  = parse_mlag_pair(MLAG_PAIRS[0], 1)
-    border_left_leaf  = leaves[_bl_idx - 1]
+    _bl_idx, _br_idx = parse_mlag_pair(MLAG_PAIRS[0], 1)
+    border_left_leaf = leaves[_bl_idx - 1]
     border_right_leaf = leaves[_br_idx - 1]
+    if ENABLE_DMZ_FIREWALL:
+        for idx_name, idx_value in (
+            ("FIREWALL_LAN_BORDER_LEAF_INDEX", FIREWALL_LAN_BORDER_LEAF_INDEX),
+            ("FIREWALL_DMZ_BORDER_LEAF_INDEX", FIREWALL_DMZ_BORDER_LEAF_INDEX),
+        ):
+            if idx_value < 1 or idx_value > NUM_LEAVES:
+                raise RuntimeError(
+                    f"{idx_name}={idx_value} is outside valid leaf range 1..{NUM_LEAVES}"
+                )
 
     # Flat, ordered list of leaves belonging to non-border MLAG pairs.
     # Server-2+ are round-robined across this list, so they always land
@@ -215,9 +257,9 @@ try:
     # Round-robined across compute_leaf_list (MLAG_PAIRS[1:]).
     # Server-2 always lands on the first leaf of the second MLAG pair.
     for i in range(1, NUM_SERVERS):
-        leaf   = compute_leaf_list[(i - 1) % len(compute_leaf_list)]
+        leaf = compute_leaf_list[(i - 1) % len(compute_leaf_list)]
         leaf_x = leaf["x"]
-        count  = leaf_server_count.get(leaf["node_id"], 0)
+        count = leaf_server_count.get(leaf["node_id"], 0)
         leaf_server_count[leaf["node_id"]] = count + 1
         servers.append(
             deploy(
@@ -234,8 +276,12 @@ try:
     # ==========================================
     print("Spawning Management Switch...")
     mgmt_switch = gns3.create_node(
-        project_id, "MGMT-Switch", "ethernet_switch", "local",
-        (NUM_LEAVES * 200) // 2, -300,
+        project_id,
+        "MGMT-Switch",
+        "ethernet_switch",
+        "local",
+        (NUM_LEAVES * 200) // 2,
+        -300,
     )
     gns3.set_switch_ports(project_id, mgmt_switch["node_id"], 24)
     mgmt_port = [0]
@@ -243,8 +289,12 @@ try:
 
     print("Spawning Cloud node...")
     cloud = gns3.create_node(
-        project_id, "Cloud", "cloud", "local",
-        (NUM_LEAVES * 200) // 2, -400,
+        project_id,
+        "Cloud",
+        "cloud",
+        "local",
+        (NUM_LEAVES * 200) // 2,
+        -400,
         properties={
             "interfaces": [{"name": MGMT_BRIDGE, "type": "ethernet", "special": False}]
         },
@@ -260,34 +310,35 @@ try:
             la, sa = next_adapter[leaf["node_id"]], next_adapter[spine["node_id"]]
             gns3.create_link(project_id, leaf["node_id"], la, spine["node_id"], sa)
             print(f" -> {leaf['name']} (Eth{la}) <---> {spine['name']} (Eth{sa})")
-            next_adapter[leaf["node_id"]]  += 1
+            next_adapter[leaf["node_id"]] += 1
             next_adapter[spine["node_id"]] += 1
 
     print("\nLinking Servers to Leaves...")
 
-    # ── Server-1 (FRR): dual uplinks to both border leaves ────────────
-    # This gives the FRR node two fabric interfaces (ens1 → Border-1,
-    # ens2 → Border-2) so config_frr.py can peer with both.
+    # ── Server-1 (FRR): upstream router node ───────────────────────────
+    # In firewall-centered mode, FRR peers only with OPNsense WAN and is
+    # not directly linked to border leaves.
     _frr = servers[0]
-    for _bl in [border_left_leaf, border_right_leaf]:
-        _sa = next_adapter[_frr["node_id"]]
-        _la = next_adapter[_bl["node_id"]]
-        gns3.create_link(project_id, _frr["node_id"], _sa, _bl["node_id"], _la)
-        print(f" -> {_frr['name']} (Eth{_sa}) <---> {_bl['name']} (Eth{_la})")
-        next_adapter[_frr["node_id"]] += 1
-        next_adapter[_bl["node_id"]]  += 1
+    if not ENABLE_DMZ_FIREWALL:
+        for _bl in [border_left_leaf, border_right_leaf]:
+            _sa = next_adapter[_frr["node_id"]]
+            _la = next_adapter[_bl["node_id"]]
+            gns3.create_link(project_id, _frr["node_id"], _sa, _bl["node_id"], _la)
+            print(f" -> {_frr['name']} (Eth{_sa}) <---> {_bl['name']} (Eth{_la})")
+            next_adapter[_frr["node_id"]] += 1
+            next_adapter[_bl["node_id"]] += 1
 
     # ── Server-2+ (Proxmox): single uplink, round-robined across ──────
     # compute_leaf_list (MLAG_PAIRS[1:]).  Server-2 always connects to
     # the first leaf of the second MLAG pair, matching the spawn order.
     for i, server in enumerate(servers[1:]):
         leaf = compute_leaf_list[i % len(compute_leaf_list)]
-        sa   = next_adapter[server["node_id"]]
-        la   = next_adapter[leaf["node_id"]]
+        sa = next_adapter[server["node_id"]]
+        la = next_adapter[leaf["node_id"]]
         gns3.create_link(project_id, server["node_id"], sa, leaf["node_id"], la)
         print(f" -> {server['name']} (Eth{sa}) <---> {leaf['name']} (Eth{la})")
         next_adapter[server["node_id"]] += 1
-        next_adapter[leaf["node_id"]]   += 1
+        next_adapter[leaf["node_id"]] += 1
 
     # ==========================================
     # 7. Wire MLAG peer links
@@ -318,41 +369,110 @@ try:
 
         paired_leaf_indexes.add(left_idx)
         paired_leaf_indexes.add(right_idx)
-        left_leaf  = leaves[left_idx  - 1]
+        left_leaf = leaves[left_idx - 1]
         right_leaf = leaves[right_idx - 1]
 
         for _ in range(MLAG_PEER_LINK_MEMBER_COUNT):
-            left_adapter  = next_adapter[left_leaf["node_id"]]
+            left_adapter = next_adapter[left_leaf["node_id"]]
             right_adapter = next_adapter[right_leaf["node_id"]]
             gns3.create_link(
                 project_id,
-                left_leaf["node_id"],  left_adapter,
-                right_leaf["node_id"], right_adapter,
+                left_leaf["node_id"],
+                left_adapter,
+                right_leaf["node_id"],
+                right_adapter,
             )
             print(
                 f" -> Pair {pair_number}: {left_leaf['name']} (Eth{left_adapter}) "
                 f"<---> {right_leaf['name']} (Eth{right_adapter})"
             )
-            next_adapter[left_leaf["node_id"]]  += 1
+            next_adapter[left_leaf["node_id"]] += 1
             next_adapter[right_leaf["node_id"]] += 1
+
+    if ENABLE_DMZ_FIREWALL:
+        print("\nLinking Firewall interfaces...")
+        firewall = firewalls[0]
+        upstream_node = next(
+            (node for node in servers if node["name"] == FIREWALL_WAN_UPSTREAM_NODE_NAME),
+            None,
+        )
+        if upstream_node is None:
+            raise RuntimeError(
+                f"FIREWALL_WAN_UPSTREAM_NODE_NAME '{FIREWALL_WAN_UPSTREAM_NODE_NAME}' "
+                "not found among deployed servers."
+            )
+        lan_leaf = leaves[FIREWALL_LAN_BORDER_LEAF_INDEX - 1]
+        dmz_leaf = leaves[FIREWALL_DMZ_BORDER_LEAF_INDEX - 1]
+
+        # adapter 1 (WAN) -> upstream FRR router
+        fw_wan_adapter = next_adapter[firewall["node_id"]]
+        upstream_adapter = next_adapter[upstream_node["node_id"]]
+        gns3.create_link(
+            project_id,
+            firewall["node_id"],
+            fw_wan_adapter,
+            upstream_node["node_id"],
+            upstream_adapter,
+        )
+        print(
+            f" -> {firewall['name']} (Eth{fw_wan_adapter}/WAN) "
+            f"<---> {upstream_node['name']} (Eth{upstream_adapter})"
+        )
+        next_adapter[firewall["node_id"]] += 1
+        next_adapter[upstream_node["node_id"]] += 1
+
+        # adapter 2 (LAN) -> fabric-facing leaf
+        fw_lan_adapter = next_adapter[firewall["node_id"]]
+        lan_leaf_adapter = next_adapter[lan_leaf["node_id"]]
+        gns3.create_link(
+            project_id,
+            firewall["node_id"],
+            fw_lan_adapter,
+            lan_leaf["node_id"],
+            lan_leaf_adapter,
+        )
+        print(
+            f" -> {firewall['name']} (Eth{fw_lan_adapter}/LAN) "
+            f"<---> {lan_leaf['name']} (Eth{lan_leaf_adapter})"
+        )
+        next_adapter[firewall["node_id"]] += 1
+        next_adapter[lan_leaf["node_id"]] += 1
+
+        # adapter 3 (DMZ) -> DMZ leaf inside EVPN fabric
+        fw_dmz_adapter = next_adapter[firewall["node_id"]]
+        dmz_leaf_adapter = next_adapter[dmz_leaf["node_id"]]
+        gns3.create_link(
+            project_id,
+            firewall["node_id"],
+            fw_dmz_adapter,
+            dmz_leaf["node_id"],
+            dmz_leaf_adapter,
+        )
+        print(
+            f" -> {firewall['name']} (Eth{fw_dmz_adapter}/DMZ) "
+            f"<---> {dmz_leaf['name']} (Eth{dmz_leaf_adapter})"
+        )
+        next_adapter[firewall["node_id"]] += 1
+        next_adapter[dmz_leaf["node_id"]] += 1
 
     # ==========================================
     # 8. Wire management network
     # ==========================================
     print("\nWiring management network...")
-    for node in spines + leaves + servers:
+    for node in spines + leaves + servers + firewalls:
         gns3.create_link(
             project_id,
-            node["node_id"], 0,
-            mgmt_switch["node_id"], 0,
+            node["node_id"],
+            0,
+            mgmt_switch["node_id"],
+            0,
             port_b=mgmt_port[0],
         )
         print(f" -> {node['name']} (Mgmt0) <---> MGMT-Switch (port {mgmt_port[0]})")
         mgmt_port[0] += 1
 
     gns3.create_link(
-        project_id, mgmt_switch["node_id"], 0, cloud["node_id"], 0,
-        port_a=mgmt_port[0]
+        project_id, mgmt_switch["node_id"], 0, cloud["node_id"], 0, port_a=mgmt_port[0]
     )
     print(f" -> MGMT-Switch (port {mgmt_port[0]}) <---> Cloud ({MGMT_BRIDGE})")
 

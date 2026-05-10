@@ -5,9 +5,10 @@ while true;do
   usage=${usage%.*} 
   [ "$usage" -lt 15 ] && break
 done
-python configs/config_switches.py
-python configs/config_frr.py
-python configs/config_proxmox.py
+python3 configs/config_switches.py
+python3 configs/config_firewalls.py
+python3 configs/config_frr.py
+python3 configs/config_proxmox.py
 cd configs/ansible
 ansible-playbook -i inventory.py underlay.yml
 ansible-playbook -i inventory.py overlay.yml
