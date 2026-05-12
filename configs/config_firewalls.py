@@ -111,6 +111,15 @@ def send_lines(conn, lines, delay=0.5):
         time.sleep(delay)
 
 
+def shell_single_quote(value):
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def build_printf_to_file(lines, destination):
+    quoted_lines = " ".join(shell_single_quote(line) for line in lines)
+    return f"printf '%s\\n' {quoted_lines} > {destination}"
+
+
 def apply_over_ssh(mgmt_ip, shell_cmds):
     conn = ConnectHandler(
         device_type="linux",
@@ -186,8 +195,9 @@ def build_neighbors_from_tenants():
     if not MLAG_PAIRS:
         return []
 
-    border_left_idx, _ = parse_pair(MLAG_PAIRS[0])
-    border_asn = LEAF_AS_BASE + (border_left_idx - 1)
+    border_left_idx, border_right_idx = parse_pair(MLAG_PAIRS[0])
+    border_left_asn = LEAF_AS_BASE + (border_left_idx - 1)
+    border_right_asn = LEAF_AS_BASE + (border_right_idx - 1)
 
     neighbors = []
     for tenant in TENANTS:
@@ -199,7 +209,7 @@ def build_neighbors_from_tenants():
             neighbors.append(
                 {
                     "ip": left_ip,
-                    "remote_as": border_asn,
+                    "remote_as": border_left_asn,
                     "description": f"{tenant['name']}-Border-1",
                 }
             )
@@ -209,7 +219,7 @@ def build_neighbors_from_tenants():
             neighbors.append(
                 {
                     "ip": right_ip,
-                    "remote_as": border_asn,
+                    "remote_as": border_right_asn,
                     "description": f"{tenant['name']}-Border-2",
                 }
             )
@@ -221,6 +231,7 @@ def configure_firewall():
     mgmt_cidr = f"{mgmt_ip}/24"
 
     rules = build_pf_rules()
+    pf_rules_write_cmd = build_printf_to_file(rules, "/tmp/dmz_rules.conf")
     shell_cmds = [
         f"ifconfig {FIREWALL_MGMT_IFACE} inet {mgmt_cidr} up",
         f"ifconfig {FIREWALL_WAN_IFACE} inet {FIREWALL_WAN_CIDR} up",
@@ -228,9 +239,7 @@ def configure_firewall():
         f"ifconfig {FIREWALL_DMZ_IFACE} inet {FIREWALL_DMZ_CIDR} up",
         f"route -n add default {FIREWALL_WAN_GATEWAY} || route -n change default {FIREWALL_WAN_GATEWAY}",
         "sysctl net.inet.ip.forwarding=1",
-        "cat > /tmp/dmz_rules.conf <<'PFEOF'",
-        *rules,
-        "PFEOF",
+        pf_rules_write_cmd,
         "pfctl -f /tmp/dmz_rules.conf",
         "pfctl -e",
     ]
@@ -238,12 +247,13 @@ def configure_firewall():
     resolved_neighbors = FIREWALL_BGP_NEIGHBORS or build_neighbors_from_tenants()
     if resolved_neighbors:
         bgp_config = build_frr_bgp_config(resolved_neighbors)
+        bgp_config_write_cmd = build_printf_to_file(
+            bgp_config.splitlines(), "/tmp/opnsense_bgp.conf"
+        )
         shell_cmds.extend(
             [
                 "if command -v vtysh >/dev/null 2>&1; then",
-                "cat > /tmp/opnsense_bgp.conf <<'BGPEOF'",
-                *bgp_config.splitlines(),
-                "BGPEOF",
+                bgp_config_write_cmd,
                 "vtysh -f /tmp/opnsense_bgp.conf",
                 'vtysh -c "write memory"',
                 "else",
