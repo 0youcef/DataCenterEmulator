@@ -87,7 +87,7 @@ Connects to each switch via its GNS3 console port over Telnet, sets the hostname
 
 ### 3. Configure OPNsense firewall (Telnet)
 
-After switches are reachable, configure firewall interfaces (WAN/LAN/DMZ) and base DMZ policy:
+After switches are reachable, configure firewall interfaces (WAN/LAN/DMZ), enable SSH on OPNsense management, and apply base DMZ policy:
 
 ```bash
 python configs/config_firewalls.py
@@ -130,23 +130,23 @@ from gns3 import GNS3Client
 gns3 = GNS3Client(server, user, password)
 ```
 
-| Method | Description |
-|---|---|
-| `get_projects()` | List all projects |
-| `create_project(name)` | Create project, returns `None` on 409 |
-| `open_project(id)` | Open a project |
-| `close_project(id)` | Close a project (stops all nodes) |
-| `delete_project(id)` | Delete a project |
-| `get_computes()` | List registered computes |
-| `get_templates()` | List all templates |
-| `get_nodes(project_id)` | List nodes in a project |
-| `get_links(project_id)` | List links in a project |
-| `create_node_from_template(project_id, template_id, compute_id, x, y)` | Spawn a node from template |
-| `create_node(project_id, name, node_type, compute_id, x, y, properties)` | Create a built-in node (switch, cloud) |
-| `rename_node(project_id, node_id, name)` | Rename a node |
-| `set_switch_ports(project_id, node_id, num_ports)` | Set number of ports on ethernet switch |
-| `start_nodes(project_id)` | Start all nodes in project |
-| `start_node(project_id, node_id)` | Start a single node |
-| `create_link(project_id, node_a, adapter_a, node_b, adapter_b, port_a, port_b)` | Wire two nodes |
+| Method                                                                          | Description                            |
+| ------------------------------------------------------------------------------- | -------------------------------------- |
+| `get_projects()`                                                                | List all projects                      |
+| `create_project(name)`                                                          | Create project, returns `None` on 409  |
+| `open_project(id)`                                                              | Open a project                         |
+| `close_project(id)`                                                             | Close a project (stops all nodes)      |
+| `delete_project(id)`                                                            | Delete a project                       |
+| `get_computes()`                                                                | List registered computes               |
+| `get_templates()`                                                               | List all templates                     |
+| `get_nodes(project_id)`                                                         | List nodes in a project                |
+| `get_links(project_id)`                                                         | List links in a project                |
+| `create_node_from_template(project_id, template_id, compute_id, x, y)`          | Spawn a node from template             |
+| `create_node(project_id, name, node_type, compute_id, x, y, properties)`        | Create a built-in node (switch, cloud) |
+| `rename_node(project_id, node_id, name)`                                        | Rename a node                          |
+| `set_switch_ports(project_id, node_id, num_ports)`                              | Set number of ports on ethernet switch |
+| `start_nodes(project_id)`                                                       | Start all nodes in project             |
+| `start_node(project_id, node_id)`                                               | Start a single node                    |
+| `create_link(project_id, node_a, adapter_a, node_b, adapter_b, port_a, port_b)` | Wire two nodes                         |
 
 **Note on ethernet switches:** switches use `adapter_number=0, port_number=N` — pass `port_a` or `port_b` when one end is a switch.

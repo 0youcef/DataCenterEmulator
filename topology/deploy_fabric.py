@@ -28,6 +28,7 @@ from sots.config import (
     FIREWALL_LAN_BORDER_LEAF_INDEX,
     FIREWALL_DMZ_BORDER_LEAF_INDEX,
 )
+from sots.vlans import TENANTS
 
 
 def parse_mlag_pair(pair, pair_number):
@@ -55,6 +56,13 @@ def parse_mlag_pair(pair, pair_number):
         ) from exc
 
     return left_idx, right_idx
+
+
+def ethernet_to_adapter(interface_name):
+    if not isinstance(interface_name, str) or not interface_name.startswith("Ethernet"):
+        return None
+    suffix = interface_name[len("Ethernet") :]
+    return int(suffix) if suffix.isdigit() else None
 
 
 def validate_compute_list(name, lst):
@@ -230,11 +238,11 @@ try:
         _l, _r = parse_mlag_pair(_pair, _pair_num)
         compute_leaf_list.extend([leaves[_l - 1], leaves[_r - 1]])
 
-    if not compute_leaf_list:
-        raise RuntimeError(
-            "No compute MLAG pairs found (MLAG_PAIRS has only one entry). "
-            "Add at least one more pair for Proxmox servers."
-        )
+    # if not compute_leaf_list:
+    #     raise RuntimeError(
+    #         "No compute MLAG pairs found (MLAG_PAIRS has only one entry). "
+    #         "Add at least one more pair for Proxmox servers."
+    #     )
 
     print("Spawning Servers...")
     leaf_server_count = {}
@@ -347,6 +355,25 @@ try:
         raise RuntimeError("MLAG_PEER_LINK_MEMBER_COUNT must be >= 1")
 
     print("\nLinking MLAG peer leaves from SSOT...")
+    # No adapter reservation needed: each border leaf has exactly ONE physical
+    # link to the firewall, and all VRFs trunk their VLANs over that single link
+    # via 802.1Q subinterfaces.  MLAG peer links simply use the next available
+    # adapter after the spine uplink; the firewall link gets whatever comes next.
+    #
+    # handoff_interface in sots/vlans.py must be set to "Ethernet4" to match.
+
+    # Resulting adapter layout (with NUM_SPINES=1, MLAG_PEER_LINK_MEMBER_COUNT=2):
+    #   Eth0  management
+    #   Eth1  spine uplink
+    #   Eth2  MLAG peer link 1
+    #   Eth3  MLAG peer link 2
+    #   Eth4  firewall uplink  ← trunks ALL VRFs over VLAN 110 + 130 + any additional tenant VLANs
+
+    def next_peer_link_adapter(leaf_index, node_id):
+        adapter = next_adapter[node_id]
+        next_adapter[node_id] = adapter + 1
+        return adapter
+
     paired_leaf_indexes = set()
     for pair_number, pair in enumerate(MLAG_PAIRS, start=1):
         left_idx, right_idx = parse_mlag_pair(pair, pair_number)
@@ -373,8 +400,8 @@ try:
         right_leaf = leaves[right_idx - 1]
 
         for _ in range(MLAG_PEER_LINK_MEMBER_COUNT):
-            left_adapter = next_adapter[left_leaf["node_id"]]
-            right_adapter = next_adapter[right_leaf["node_id"]]
+            left_adapter = next_peer_link_adapter(left_idx, left_leaf["node_id"])
+            right_adapter = next_peer_link_adapter(right_idx, right_leaf["node_id"])
             gns3.create_link(
                 project_id,
                 left_leaf["node_id"],
@@ -386,14 +413,16 @@ try:
                 f" -> Pair {pair_number}: {left_leaf['name']} (Eth{left_adapter}) "
                 f"<---> {right_leaf['name']} (Eth{right_adapter})"
             )
-            next_adapter[left_leaf["node_id"]] += 1
-            next_adapter[right_leaf["node_id"]] += 1
 
     if ENABLE_DMZ_FIREWALL:
         print("\nLinking Firewall interfaces...")
         firewall = firewalls[0]
         upstream_node = next(
-            (node for node in servers if node["name"] == FIREWALL_WAN_UPSTREAM_NODE_NAME),
+            (
+                node
+                for node in servers
+                if node["name"] == FIREWALL_WAN_UPSTREAM_NODE_NAME
+            ),
             None,
         )
         if upstream_node is None:

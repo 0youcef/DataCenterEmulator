@@ -15,13 +15,13 @@ TEMPLATE_NAME_FRR = "Debian Server"
 TEMPLATE_NAME_PROXMOX = "Proxmox VE"
 TEMPLATE_NAME_FIREWALL = "OPNsense"
 
-NUM_SPINES = 2
-NUM_LEAVES = 8
+NUM_SPINES = 1
+NUM_LEAVES = 2
 NUM_SERVERS = 1
 
 MGMT_BASE_IP = "172.20.20"
 MGMT_START = 10
-MGMT_BRIDGE = "br-10699de2c093"
+MGMT_BRIDGE = "br0"
 
 SSH_USER = "admin"
 SSH_PASS = "admin"
@@ -51,23 +51,27 @@ FIREWALL_LAN_BORDER_LEAF_INDEX = 2
 FIREWALL_DMZ_BORDER_LEAF_INDEX = 1
 
 # OPNsense console login (used by configs/config_firewalls.py)
-FIREWALL_CONSOLE_USER = "admin"
-FIREWALL_CONSOLE_PASS = "admin"
+FIREWALL_CONSOLE_USER = "root"
+FIREWALL_CONSOLE_PASS = "opnsense"
 
 # OPNsense interface names (vtnet* for VirtIO templates by default)
 FIREWALL_MGMT_IFACE = "vtnet0"
 FIREWALL_WAN_IFACE = "vtnet1"
+#!!!! missleading comment: the "LAN" interface is actually linking to one border leaf,
+# and the "DMZ" interface is linking to the other border leaf. Both are trunking multiple VLANs.
+
 FIREWALL_LAN_IFACE = "vtnet2"
 FIREWALL_DMZ_IFACE = "vtnet3"
 
 # Non-conflicting default subnets (change as needed)
 FIREWALL_WAN_CIDR = "10.2.0.2/24"
 FIREWALL_WAN_GATEWAY = "10.2.0.1"
-FIREWALL_LAN_CIDR = "172.31.0.1/24"
-FIREWALL_DMZ_CIDR = "172.31.10.1/24"
+FIREWALL_LAN_CIDR = "10.31.0.254/24"  # changed from 172.31.0.1/24
+FIREWALL_DMZ_CIDR = "10.31.10.254/24"  # changed from 172.31.10.1/24
+
 
 # Basic inbound DNAT from WAN to DMZ host (optional placeholder)
-FIREWALL_DMZ_EXPOSED_HOST = "172.31.10.10"
+FIREWALL_DMZ_EXPOSED_HOST = "10.31.10.10"  # changed from 172.31.10.10
 FIREWALL_DMZ_EXPOSED_PORTS = [22, 80, 443]
 
 # eBGP on OPNsense FRR (placeholder-friendly; adjust as needed)
@@ -98,7 +102,8 @@ VTEP_SUBNET = "10.254.0"  # Base for per-leaf VTEP /32 addresses: .1, .2, ...
 VXLAN_INTERFACE = "Vxlan1"
 
 # --- MLAG ---
-MLAG_PAIRS = [[1, 2], [3, 4], [5, 6], [7, 8]]
+# MLAG_PAIRS = [[1, 2], [3, 4], [5, 6], [7, 8]]
+MLAG_PAIRS = [[1, 2]]
 MLAG_DOMAIN_PREFIX = "MLAG"
 MLAG_PEER_LINK_CHANNEL = 2000
 MLAG_PEER_LINK_MEMBER_COUNT = 2

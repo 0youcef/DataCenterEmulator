@@ -31,6 +31,7 @@ from sots.config import (
     MLAG_TRUNK_GROUP,
     MLAG_PEER_IP_SUBNET,
     MLAG_RELOAD_DELAY_MLAG,
+    ENABLE_DMZ_FIREWALL,
 )
 from sots.vlans import VLANS, TENANTS
 
@@ -172,14 +173,52 @@ def parse_pair(pair, pair_number):
 _border_left_idx, _border_right_idx = parse_pair(MLAG_PAIRS[0], 1)
 
 
+def ethernet_to_adapter(interface_name):
+    if not isinstance(interface_name, str) or not interface_name.startswith("Ethernet"):
+        return None
+    suffix = interface_name[len("Ethernet") :]
+    return int(suffix) if suffix.isdigit() else None
+
+
+def build_reserved_mlag_adapters():
+    reserved = {}
+    if not ENABLE_DMZ_FIREWALL:
+        return reserved
+
+    handoff_adapters = set()
+    for tenant in TENANTS:
+        if not tenant.get("external_handoff"):
+            continue
+        adapter = ethernet_to_adapter(tenant.get("handoff_interface"))
+        if adapter is not None:
+            handoff_adapters.add(adapter)
+
+    if not handoff_adapters:
+        return reserved
+
+    reserved[_border_left_idx] = set(handoff_adapters)
+    reserved[_border_right_idx] = set(handoff_adapters)
+    return reserved
+
+
+def next_mlag_member_interface(leaf_index, next_adapter_by_leaf, reserved_adapters):
+    current = next_adapter_by_leaf[leaf_index - 1]
+    reserved_for_leaf = reserved_adapters.get(leaf_index, set())
+    while current in reserved_for_leaf:
+        current += 1
+    next_adapter_by_leaf[leaf_index - 1] = current + 1
+    return f"Ethernet{current}"
+
+
 def build_server_interface_plan():
     server_interfaces_by_leaf = [[] for _ in range(NUM_LEAVES)]
     # Leaf-spine links consume Ethernet1..EthernetNUM_SPINES.
     next_adapter_by_leaf = [NUM_SPINES + 1 for _ in range(NUM_LEAVES)]
 
     # Match deploy_fabric.py server placement (round-robin across leaves).
-    for server_index in range(NUM_SERVERS):
-        leaf_index = server_index % NUM_LEAVES
+    start_index = 1 if ENABLE_DMZ_FIREWALL else 0
+    for server_index in range(start_index, NUM_SERVERS):
+        leaf_index = (server_index - start_index) % NUM_LEAVES
         server_interfaces_by_leaf[leaf_index].append(
             f"Ethernet{next_adapter_by_leaf[leaf_index]}"
         )
@@ -195,6 +234,7 @@ def allocate_mlag_peer_link_members(next_adapter_by_leaf):
     pair_details = []
     members_by_leaf = {}
     paired_leaf_names = set()
+    reserved_adapters = build_reserved_mlag_adapters()
 
     for pair_number, pair in enumerate(MLAG_PAIRS, start=1):
         left_idx, right_idx = parse_pair(pair, pair_number)
@@ -221,10 +261,16 @@ def allocate_mlag_peer_link_members(next_adapter_by_leaf):
         left_members = []
         right_members = []
         for _ in range(MLAG_PEER_LINK_MEMBER_COUNT):
-            left_members.append(f"Ethernet{next_adapter_by_leaf[left_idx - 1]}")
-            right_members.append(f"Ethernet{next_adapter_by_leaf[right_idx - 1]}")
-            next_adapter_by_leaf[left_idx - 1] += 1
-            next_adapter_by_leaf[right_idx - 1] += 1
+            left_members.append(
+                next_mlag_member_interface(
+                    left_idx, next_adapter_by_leaf, reserved_adapters
+                )
+            )
+            right_members.append(
+                next_mlag_member_interface(
+                    right_idx, next_adapter_by_leaf, reserved_adapters
+                )
+            )
 
         members_by_leaf[left_name] = left_members
         members_by_leaf[right_name] = right_members

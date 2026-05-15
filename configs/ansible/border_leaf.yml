@@ -15,6 +15,7 @@
     - name: Set parent interface to routed mode (no switchport)
       arista.eos.eos_config:
         lines:
+          - "no channel-group"
           - "no switchport"
           - "no shutdown"
         parents: "interface {{ item }}"
