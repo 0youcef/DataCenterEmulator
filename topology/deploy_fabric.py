@@ -65,6 +65,18 @@ def ethernet_to_adapter(interface_name):
     return int(suffix) if suffix.isdigit() else None
 
 
+def leaf_node_name(leaf_1based_index, border_left_idx, border_right_idx, enable_dmz):
+    """Return the canonical GNS3 node name for a leaf.
+    Mirrors the same logic in config_switches.py and inventory.py.
+    """
+    if enable_dmz:
+        if leaf_1based_index == border_left_idx:
+            return "Border-1"
+        if leaf_1based_index == border_right_idx:
+            return "Border-2"
+    return f"Leaf-{leaf_1based_index}"
+
+
 def validate_compute_list(name, lst):
     """Ensure compute list is a non-empty list of strings."""
     if not isinstance(lst, (list, tuple)) or len(lst) == 0:
@@ -188,13 +200,16 @@ try:
             deploy(template_id_arista, compute_id, f"Spine-{i+1}", i * 200, -100)
         )
 
+    # Resolve border-leaf indexes before naming leaves so Border-1/2 labels
+    # are applied consistently during node creation.
+    _bl_idx, _br_idx = parse_mlag_pair(MLAG_PAIRS[0], 1)
+
     print("Spawning Leaves...")
     for i in range(NUM_LEAVES):
         # Round-robin across COMPUTE_LEAVES list
         compute_id = compute_ids_leaves[i % len(compute_ids_leaves)]
-        leaves.append(
-            deploy(template_id_arista, compute_id, f"Leaf-{i+1}", i * 200, 100)
-        )
+        name = leaf_node_name(i + 1, _bl_idx, _br_idx, ENABLE_DMZ_FIREWALL)
+        leaves.append(deploy(template_id_arista, compute_id, name, i * 200, 100))
 
     if ENABLE_DMZ_FIREWALL:
         print("Spawning Firewall...")
@@ -217,7 +232,7 @@ try:
     #
     # All indices in MLAG_PAIRS are 1-based (matching Leaf-N names).
     # ------------------------------------------------------------------
-    _bl_idx, _br_idx = parse_mlag_pair(MLAG_PAIRS[0], 1)
+
     border_left_leaf = leaves[_bl_idx - 1]
     border_right_leaf = leaves[_br_idx - 1]
     if ENABLE_DMZ_FIREWALL:

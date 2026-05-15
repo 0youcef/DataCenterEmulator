@@ -28,6 +28,8 @@ TENANTS = [
         "name": "VRF_PEDAGOGY",
         "l3_vni": 50010,
         "l3": True,
+        # When true, originate 0.0.0.0/0 toward external peers for this VRF.
+        "originate_default_route": True,
         # Import VRF_RESEARCH routes into this VRF (symmetric with VRF_RESEARCH below).
         "import_rts": [50020],
         "external_handoff": True,
@@ -53,6 +55,8 @@ TENANTS = [
         "name": "VRF_DMZ",
         "l3_vni": 50030,
         "l3": True,
+        # When true, originate 0.0.0.0/0 toward external peers for this VRF.
+        "originate_default_route": True,
         "external_handoff": True,
         # Same physical interface as PEDAGOGY — VLAN 130 distinguishes DMZ traffic.
         "handoff_interface": "Ethernet4",

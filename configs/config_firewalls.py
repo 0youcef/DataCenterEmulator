@@ -271,12 +271,14 @@ def build_pf_rules():
 # The firewall dials outward TO those IPs.
 # The remote-as values come from LEAF_AS_BASE + (leaf_index - 1).
 # ---------------------------------------------------------------------------
-def build_frr_bgp_config(neighbors):
+def build_frr_bgp_config(neighbors, default_originate_peers=None):
+    default_originate_peers = default_originate_peers or set()
     lines = [
         f"router bgp {FIREWALL_BGP_ASN}",
         " no bgp ebgp-requires-policy",
     ]
     activate_lines = []
+    default_originate_lines = []
     for neighbor in neighbors:
         peer_ip = neighbor["ip"]
         remote_as = neighbor["remote_as"]
@@ -288,9 +290,12 @@ def build_frr_bgp_config(neighbors):
             ]
         )
         activate_lines.append(f"  neighbor {peer_ip} activate")
+        if peer_ip in default_originate_peers:
+            default_originate_lines.append(f"  neighbor {peer_ip} default-originate")
 
     lines.append(" address-family ipv4 unicast")
     lines.extend(activate_lines)
+    lines.extend(default_originate_lines)
     lines.append(" exit-address-family")
     return "\n".join(lines)
 
@@ -361,6 +366,21 @@ def build_neighbors_from_tenants():
                 }
             )
     return neighbors
+
+
+def build_default_originate_peer_set(tenants):
+    """Collect border-leaf peer IPs for VRFs that should receive 0.0.0.0/0."""
+    peers = set()
+    for tenant in tenants:
+        if not tenant.get("external_handoff"):
+            continue
+        if not tenant.get("originate_default_route", False):
+            continue
+        for key in ("handoff_local_ip", "handoff_local_ip_2"):
+            value = tenant.get(key, "")
+            if value:
+                peers.add(value.split("/")[0])
+    return peers
 
 
 def find_offlink_neighbors(neighbors):
@@ -440,7 +460,10 @@ def configure_firewall():
                 + ", ".join(offlink_neighbors)
             )
 
-        bgp_config = build_frr_bgp_config(resolved_neighbors)
+        default_originate_peers = build_default_originate_peer_set(TENANTS)
+        bgp_config = build_frr_bgp_config(
+            resolved_neighbors, default_originate_peers=default_originate_peers
+        )
         bgp_config_write_cmds = build_write_lines_cmds(
             bgp_config.splitlines(), "/tmp/opnsense_bgp.conf"
         )

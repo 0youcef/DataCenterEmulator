@@ -124,6 +124,7 @@ def build_external_handoffs(tenants, border_number):
             {
                 "vrf": t["name"],
                 "l3_vni": t["l3_vni"],
+                "originate_default_route": t.get("originate_default_route", False),
                 "interface": t["handoff_interface"],
                 "vlan": t[
                     "handoff_vlan"

@@ -74,6 +74,16 @@
           - "address-family ipv4"
       loop: "{{ external_handoffs }}"
 
+    - name: Originate default route toward external peer for selected VRFs
+      arista.eos.eos_config:
+        lines:
+          - "neighbor {{ item.peer_ip }} default-originate"
+        parents:
+          - "router bgp {{ bgp_asn }}"
+          - "vrf {{ item.vrf }}"
+      when: item.originate_default_route | default(false)
+      loop: "{{ external_handoffs }}"
+
     # ------------------------------------------------------------------
     # 4. Route redistribution — tie external BGP to EVPN fabric
     #
