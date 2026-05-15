@@ -6,28 +6,29 @@ import socket
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sots.config import (
-    GNS3_SERVER, GNS3_USER, GNS3_PASSWORD,
+    GNS3_SERVER,
+    GNS3_USER,
+    GNS3_PASSWORD,
     PROJECT_NAME,
-    NUM_SPINES, NUM_LEAVES,
-    MGMT_BASE_IP, MGMT_START,
-    SSH_USER, SSH_PASS,
-    COMPUTE_SPINES, COMPUTE_LEAVES,    # plural — matches config.py
+    NUM_SPINES,
+    NUM_LEAVES,
+    MGMT_BASE_IP,
+    MGMT_START,
+    SSH_USER,
+    SSH_PASS,
+    COMPUTE_SPINES,
+    COMPUTE_LEAVES,
+    ENABLE_DMZ_FIREWALL,
     MLAG_PAIRS,
 )
 
 # ---------------------------------------------------------------------------
 # Border leaf naming — mirrors deploy_fabric.py and inventory.py exactly.
-# Handles the case where BORDER_FIREWALL_COUNT may not exist in config.py
-# (older configs without DMZ support default to 0).
+# Border leaves are the first MLAG pair when ENABLE_DMZ_FIREWALL is True.
 # ---------------------------------------------------------------------------
-
-try:
-    from sots.config import BORDER_FIREWALL_COUNT
-except ImportError:
-    BORDER_FIREWALL_COUNT = 0
 
 
 def _parse_pair(pair):
@@ -39,7 +40,7 @@ def _parse_pair(pair):
 
 
 border_leaf_indices = []
-if BORDER_FIREWALL_COUNT > 0 and MLAG_PAIRS:
+if ENABLE_DMZ_FIREWALL and MLAG_PAIRS:
     _left, _right = _parse_pair(MLAG_PAIRS[0])
     border_leaf_indices = [_left, _right]
 
@@ -47,7 +48,7 @@ if BORDER_FIREWALL_COUNT > 0 and MLAG_PAIRS:
 def leaf_node_name(leaf_1based_index):
     """Return the canonical node name for a leaf.
 
-    Border leaves (first MLAG pair when BORDER_FIREWALL_COUNT > 0) are named
+    Border leaves (first MLAG pair when ENABLE_DMZ_FIREWALL is True) are named
     Border-1, Border-2 in MLAG_PAIRS[0] order.  All others are Leaf-N.
     """
     if leaf_1based_index in border_leaf_indices:
@@ -77,21 +78,25 @@ for i in range(1, NUM_LEAVES + 1):
 # GNS3 console discovery
 # ---------------------------------------------------------------------------
 
+
 def get_console_ports():
     """Fetch console host+port for each switch node from the GNS3 API."""
     session = requests.Session()
 
-    auth = session.post(f"{GNS3_SERVER}/access/users/login", data={
-        "username": GNS3_USER,
-        "password": GNS3_PASSWORD,
-    })
+    auth = session.post(
+        f"{GNS3_SERVER}/access/users/login",
+        data={
+            "username": GNS3_USER,
+            "password": GNS3_PASSWORD,
+        },
+    )
     if auth.status_code != 200:
         raise RuntimeError(f"GNS3 authentication failed: {auth.text}")
     token = auth.json().get("access_token")
     session.headers.update({"Authorization": f"Bearer {token}"})
 
     projects = session.get(f"{GNS3_SERVER}/projects").json()
-    project  = next((p for p in projects if p["name"] == PROJECT_NAME), None)
+    project = next((p for p in projects if p["name"] == PROJECT_NAME), None)
     if not project:
         raise RuntimeError(f"Project '{PROJECT_NAME}' not found in GNS3")
     project_id = project["project_id"]
@@ -99,8 +104,8 @@ def get_console_ports():
     computes_resp = session.get(f"{GNS3_SERVER}/computes")
     if computes_resp.status_code != 200:
         raise RuntimeError(f"Failed to get computes: {computes_resp.text}")
-    computes        = computes_resp.json()
-    compute_by_id   = {c.get("compute_id"): c for c in computes if c.get("compute_id")}
+    computes = computes_resp.json()
+    compute_by_id = {c.get("compute_id"): c for c in computes if c.get("compute_id")}
     compute_by_name = {c.get("name"): c for c in computes if c.get("name")}
 
     # Validate all compute names referenced in config.py.
@@ -111,7 +116,7 @@ def get_console_ports():
                 f"Available computes: {sorted(compute_by_name.keys())}"
             )
 
-    nodes    = session.get(f"{GNS3_SERVER}/projects/{project_id}/nodes").json()
+    nodes = session.get(f"{GNS3_SERVER}/projects/{project_id}/nodes").json()
     api_host = GNS3_SERVER.split("://", 1)[1].split("/", 1)[0].split(":", 1)[0]
 
     console_endpoints = {}
@@ -140,6 +145,7 @@ def get_console_ports():
 # Connection helpers
 # ---------------------------------------------------------------------------
 
+
 def wait_for_telnet(host, port, retries=10, delay=15):
     for attempt in range(retries):
         try:
@@ -157,11 +163,11 @@ def configure_switch(name, mgmt_ip, console_host, console_port):
 
     device = {
         "device_type": "arista_eos_telnet",
-        "host":        console_host,
-        "port":        console_port,
-        "username":    SSH_USER,
-        "password":    SSH_PASS,
-        "timeout":     30,
+        "host": console_host,
+        "port": console_port,
+        "username": SSH_USER,
+        "password": SSH_PASS,
+        "timeout": 30,
     }
 
     try:
@@ -225,7 +231,9 @@ if __name__ == "__main__":
         if wait_for_telnet(host, port):
             configure_switch(name, mgmt_ip, host, port)
         else:
-            print(f" -> {name}: console {host}:{port} unreachable after all retries, skipping")
+            print(
+                f" -> {name}: console {host}:{port} unreachable after all retries, skipping"
+            )
 
     print("\nDone. eAPI is now available on all configured switches.")
     print("Access via: https://<switch-ip>/command-api")

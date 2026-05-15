@@ -16,8 +16,8 @@ from sots.config import (
     FIREWALL_CONSOLE_USER,
     FIREWALL_DMZ_EXPOSED_HOST,
     FIREWALL_DMZ_EXPOSED_PORTS,
-    FIREWALL_DMZ_IFACE,
-    FIREWALL_LAN_IFACE,
+    FIREWALL_BORDER1_IFACE,
+    FIREWALL_BORDER2_IFACE,
     FIREWALL_MGMT_IFACE,
     FIREWALL_NODE_NAME,
     FIREWALL_WAN_CIDR,
@@ -40,14 +40,14 @@ from sots.vlans import TENANTS, VLANS
 # ---------------------------------------------------------------------------
 # Design notes
 # ---------------------------------------------------------------------------
-# Physical wiring (set in sots/config.py):
-#   vtnet0  → management (br0)
-#   vtnet1  → WAN  (Server-1 / FRR upstream)
-#   vtnet2  → Border-2 (FIREWALL_LAN_BORDER_LEAF_INDEX = 2)
-#   vtnet3  → Border-1 (FIREWALL_DMZ_BORDER_LEAF_INDEX = 1)
+# Physical wiring (from sots/config.py):
+#   vtnet0  (FIREWALL_MGMT_IFACE)    → management (br0)
+#   vtnet1  (FIREWALL_WAN_IFACE)     → WAN (Server-1 / FRR upstream)
+#   vtnet2  (FIREWALL_BORDER2_IFACE) → Border-2 (FIREWALL_BORDER2_LEAF_INDEX = 2)
+#   vtnet3  (FIREWALL_BORDER1_IFACE) → Border-1 (FIREWALL_BORDER1_LEAF_INDEX = 1)
 #
-# vtnet2 and vtnet3 carry 802.1Q-tagged frames from the border leaves.
-# They MUST NOT have IP addresses themselves — they are pure trunk parents.
+# vtnet2 and vtnet3 are pure 802.1Q trunk parents — they carry ALL tenant
+# VLANs and must NOT have IP addresses themselves.
 # The real routed interfaces are the VLAN subinterfaces:
 #
 #   vtnet2.110  10.31.0.6/30   ↔  Border-2  10.31.0.5   (VRF_PEDAGOGY)
@@ -55,15 +55,15 @@ from sots.vlans import TENANTS, VLANS
 #   vtnet3.110  10.31.0.2/30   ↔  Border-1  10.31.0.1   (VRF_PEDAGOGY)
 #   vtnet3.130  10.31.10.2/30  ↔  Border-1  10.31.10.1  (VRF_DMZ)
 #
-# BGP neighbors on the firewall dial TO the leaf-side IPs:
-#   10.31.0.1   AS 65100  (Border-1 PEDAGOGY)
-#   10.31.0.5   AS 65101  (Border-2 PEDAGOGY)
-#   10.31.10.1  AS 65100  (Border-1 DMZ)
-#   10.31.10.5  AS 65101  (Border-2 DMZ)
+# BGP neighbors: the firewall dials OUT to the border-leaf IPs:
+#   10.31.0.1   AS 65100  (Border-1, VRF_PEDAGOGY)
+#   10.31.0.5   AS 65101  (Border-2, VRF_PEDAGOGY)
+#   10.31.10.1  AS 65100  (Border-1, VRF_DMZ)
+#   10.31.10.5  AS 65101  (Border-2, VRF_DMZ)
 #
 # PF NAT must cover the tenant VM subnets (192.168.x.x/24), not the /30
-# handoff links, because traffic forwarded from tenant VMs keeps its original
-# source IP all the way to the firewall.
+# handoff links, because traffic from tenant VMs keeps its original source
+# IP all the way to the firewall.
 # ---------------------------------------------------------------------------
 
 
@@ -184,8 +184,8 @@ def with_default_prefix(peer_ip, default_prefix=30):
 # ---------------------------------------------------------------------------
 def build_vlan_subif_cmds(tenants, lan_iface, dmz_iface):
     """
-    lan_iface (vtnet2) is wired to Border-2 → use handoff_peer_ip_2
-    dmz_iface (vtnet3) is wired to Border-1 → use handoff_peer_ip
+    border2_iface (vtnet2) is wired to Border-2 → use handoff_peer_ip_2
+    border1_iface (vtnet3) is wired to Border-1 → use handoff_peer_ip
     """
     cmds = []
     for tenant in tenants:
@@ -193,7 +193,7 @@ def build_vlan_subif_cmds(tenants, lan_iface, dmz_iface):
             continue
         vlan = tenant["handoff_vlan"]
 
-        # vtnet2 side → Border-2
+        # vtnet2 (border2_iface) → Border-2
         peer_ip_2 = tenant.get("handoff_peer_ip_2", "")
         if peer_ip_2:
             subif = f"{lan_iface}.{vlan}"
@@ -203,7 +203,7 @@ def build_vlan_subif_cmds(tenants, lan_iface, dmz_iface):
                 f"ifconfig {subif} inet {with_default_prefix(peer_ip_2)} up",
             ]
 
-        # vtnet3 side → Border-1
+        # vtnet3 (border1_iface) → Border-1
         peer_ip = tenant.get("handoff_peer_ip", "")
         if peer_ip:
             subif = f"{dmz_iface}.{vlan}"
@@ -250,10 +250,10 @@ def build_pf_rules():
         ),
         # Allow ICMP everywhere (ping, traceroute)
         "pass in quick inet proto icmp",
-        # Allow all traffic entering from LAN side (vtnet2 + all its subinterfaces)
-        f"pass in quick on {FIREWALL_LAN_IFACE} inet all keep state",
-        # Allow all traffic entering from DMZ side (vtnet3 + all its subinterfaces)
-        f"pass in quick on {FIREWALL_DMZ_IFACE} inet all keep state",
+        # Allow all traffic entering from Border-2 side (vtnet2 + all its subinterfaces)
+        f"pass in quick on {FIREWALL_BORDER2_IFACE} inet all keep state",
+        # Allow all traffic entering from Border-1 side (vtnet3 + all its subinterfaces)
+        f"pass in quick on {FIREWALL_BORDER1_IFACE} inet all keep state",
         # Allow inbound from WAN to the DMZ exposed host on specified ports
         (
             f"pass in quick on {FIREWALL_WAN_IFACE} inet proto tcp from any "
@@ -400,10 +400,10 @@ def configure_firewall():
         f"ifconfig {FIREWALL_MGMT_IFACE} inet {mgmt_cidr} up",
         # WAN interface (toward Server-1 / FRR upstream)
         f"ifconfig {FIREWALL_WAN_IFACE} inet {FIREWALL_WAN_CIDR} up",
-        # LAN/DMZ parent interfaces — NO IP, they are 802.1Q trunk parents only.
+        # Border trunk parent interfaces — NO IP, they are 802.1Q trunk parents only.
         # IPs live on the VLAN subinterfaces below.
-        f"ifconfig {FIREWALL_LAN_IFACE} up",
-        f"ifconfig {FIREWALL_DMZ_IFACE} up",
+        f"ifconfig {FIREWALL_BORDER2_IFACE} up",
+        f"ifconfig {FIREWALL_BORDER1_IFACE} up",
         # Default route via WAN gateway
         f"route -n add default {FIREWALL_WAN_GATEWAY} || route -n change default {FIREWALL_WAN_GATEWAY}",
         # Enable IP forwarding
@@ -416,11 +416,11 @@ def configure_firewall():
         " fi'",
     ]
 
-    # Create VLAN subinterfaces (vtnet2.<vlan> and vtnet3.<vlan>)
-    # vtnet2 → Border-2: firewall IP = handoff_peer_ip_2
-    # vtnet3 → Border-1: firewall IP = handoff_peer_ip
+    # Create VLAN subinterfaces on each border trunk parent
+    # vtnet2 (BORDER2) → Border-2: firewall IP = handoff_peer_ip_2
+    # vtnet3 (BORDER1) → Border-1: firewall IP = handoff_peer_ip
     vlan_subif_cmds = build_vlan_subif_cmds(
-        TENANTS, FIREWALL_LAN_IFACE, FIREWALL_DMZ_IFACE
+        TENANTS, FIREWALL_BORDER2_IFACE, FIREWALL_BORDER1_IFACE
     )
     shell_cmds.extend(vlan_subif_cmds)
 

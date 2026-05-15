@@ -37,7 +37,7 @@ SSH_PASS = "admin"
 # The names must exactly match the compute names shown in GNS3 preferences.
 COMPUTE_SPINES = ["local"]  # round-robined across all spines
 COMPUTE_LEAVES = ["local", "local"]  # round-robined across all leaves
-COMPUTE_SERVERS = ["local", "local", "local"]  # round-robined across all servers
+COMPUTE_SERVERS = ["local"]  # round-robined across all servers (NUM_SERVERS = 1)
 COMPUTE_FIREWALLS = ["local"]  # round-robined across firewalls
 
 # --- Firewall / DMZ ---
@@ -45,33 +45,35 @@ ENABLE_DMZ_FIREWALL = True
 FIREWALL_NODE_NAME = "Firewall-1"
 FIREWALL_WAN_UPSTREAM_NODE_NAME = "Server-1"
 
-# Adapter map in deploy_fabric.py:
-#   adapter 0 = management, 1 = WAN, 2 = LAN, 3 = DMZ
-FIREWALL_LAN_BORDER_LEAF_INDEX = 2
-FIREWALL_DMZ_BORDER_LEAF_INDEX = 1
+# Firewall adapter wiring (set by deploy_fabric.py):
+#   adapter 0 → vtnet0  management (br0)
+#   adapter 1 → vtnet1  WAN        (Server-1 / FRR upstream)
+#   adapter 2 → vtnet2  Border-2   (FIREWALL_BORDER2_LEAF_INDEX)
+#   adapter 3 → vtnet3  Border-1   (FIREWALL_BORDER1_LEAF_INDEX)
+#
+# Both vtnet2 and vtnet3 are 802.1Q trunk parents — they carry ALL tenant
+# VLANs via subinterfaces.  Neither interface carries a single "zone".
+FIREWALL_BORDER2_LEAF_INDEX = 2  # Leaf index wired to vtnet2
+FIREWALL_BORDER1_LEAF_INDEX = 1  # Leaf index wired to vtnet3
 
 # OPNsense console login (used by configs/config_firewalls.py)
 FIREWALL_CONSOLE_USER = "root"
 FIREWALL_CONSOLE_PASS = "opnsense"
 
 # OPNsense interface names (vtnet* for VirtIO templates by default)
-FIREWALL_MGMT_IFACE = "vtnet0"
-FIREWALL_WAN_IFACE = "vtnet1"
-#!!!! missleading comment: the "LAN" interface is actually linking to one border leaf,
-# and the "DMZ" interface is linking to the other border leaf. Both are trunking multiple VLANs.
+FIREWALL_MGMT_IFACE = "vtnet0"  # management
+FIREWALL_WAN_IFACE = "vtnet1"  # WAN (toward FRR / Server-1)
+FIREWALL_BORDER2_IFACE = "vtnet2"  # 802.1Q trunk → Border-2 (uses handoff_peer_ip_2)
+FIREWALL_BORDER1_IFACE = "vtnet3"  # 802.1Q trunk → Border-1 (uses handoff_peer_ip)
 
-FIREWALL_LAN_IFACE = "vtnet2"
-FIREWALL_DMZ_IFACE = "vtnet3"
-
-# Non-conflicting default subnets (change as needed)
+# WAN interface addressing
 FIREWALL_WAN_CIDR = "10.2.0.2/24"
 FIREWALL_WAN_GATEWAY = "10.2.0.1"
-FIREWALL_LAN_CIDR = "10.31.0.254/24"  # changed from 172.31.0.1/24
-FIREWALL_DMZ_CIDR = "10.31.10.254/24"  # changed from 172.31.10.1/24
 
-
-# Basic inbound DNAT from WAN to DMZ host (optional placeholder)
-FIREWALL_DMZ_EXPOSED_HOST = "10.31.10.10"  # changed from 172.31.10.10
+# Inbound DNAT from WAN to a DMZ host (placeholder — adjust to real VM IP).
+# The target must be a host in the DMZ_SERVICES VLAN overlay subnet
+# (192.168.30.x/24 as defined by the DMZ_SERVICES anycast_ip in sots/vlans.py).
+FIREWALL_DMZ_EXPOSED_HOST = "192.168.30.10"
 FIREWALL_DMZ_EXPOSED_PORTS = [22, 80, 443]
 
 # eBGP on OPNsense FRR (placeholder-friendly; adjust as needed)

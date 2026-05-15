@@ -8,7 +8,8 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import sots.config as config
 
-FRR_NODE_NAME = "Server-1"
+# FRR node name comes from the SSOT so it stays in sync with deploy_fabric.py.
+FRR_NODE_NAME = config.FIREWALL_WAN_UPSTREAM_NODE_NAME  # "Server-1"
 MGMT_IFACE = "enp2s0"
 MGMT_GATEWAY = f"{config.MGMT_BASE_IP}.1"
 INTERNET_PREFIX = "8.8.8.8/32"
@@ -25,7 +26,9 @@ def get_gns3_host_and_port(node_name):
     if auth_response.status_code != 200:
         raise RuntimeError(f"GNS3 authentication failed: {auth_response.text}")
 
-    token = auth_response.json().get("access_token") or auth_response.json().get("token")
+    token = auth_response.json().get("access_token") or auth_response.json().get(
+        "token"
+    )
     if token:
         session.headers.update({"Authorization": f"Bearer {token}"})
 

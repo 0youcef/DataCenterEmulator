@@ -25,8 +25,8 @@ from sots.config import (
     ENABLE_DMZ_FIREWALL,
     FIREWALL_NODE_NAME,
     FIREWALL_WAN_UPSTREAM_NODE_NAME,
-    FIREWALL_LAN_BORDER_LEAF_INDEX,
-    FIREWALL_DMZ_BORDER_LEAF_INDEX,
+    FIREWALL_BORDER2_LEAF_INDEX,
+    FIREWALL_BORDER1_LEAF_INDEX,
 )
 from sots.vlans import TENANTS
 
@@ -222,8 +222,8 @@ try:
     border_right_leaf = leaves[_br_idx - 1]
     if ENABLE_DMZ_FIREWALL:
         for idx_name, idx_value in (
-            ("FIREWALL_LAN_BORDER_LEAF_INDEX", FIREWALL_LAN_BORDER_LEAF_INDEX),
-            ("FIREWALL_DMZ_BORDER_LEAF_INDEX", FIREWALL_DMZ_BORDER_LEAF_INDEX),
+            ("FIREWALL_BORDER2_LEAF_INDEX", FIREWALL_BORDER2_LEAF_INDEX),
+            ("FIREWALL_BORDER1_LEAF_INDEX", FIREWALL_BORDER1_LEAF_INDEX),
         ):
             if idx_value < 1 or idx_value > NUM_LEAVES:
                 raise RuntimeError(
@@ -430,8 +430,8 @@ try:
                 f"FIREWALL_WAN_UPSTREAM_NODE_NAME '{FIREWALL_WAN_UPSTREAM_NODE_NAME}' "
                 "not found among deployed servers."
             )
-        lan_leaf = leaves[FIREWALL_LAN_BORDER_LEAF_INDEX - 1]
-        dmz_leaf = leaves[FIREWALL_DMZ_BORDER_LEAF_INDEX - 1]
+        border2_leaf = leaves[FIREWALL_BORDER2_LEAF_INDEX - 1]
+        border1_leaf = leaves[FIREWALL_BORDER1_LEAF_INDEX - 1]
 
         # adapter 1 (WAN) -> upstream FRR router
         fw_wan_adapter = next_adapter[firewall["node_id"]]
@@ -450,39 +450,39 @@ try:
         next_adapter[firewall["node_id"]] += 1
         next_adapter[upstream_node["node_id"]] += 1
 
-        # adapter 2 (LAN) -> fabric-facing leaf
-        fw_lan_adapter = next_adapter[firewall["node_id"]]
-        lan_leaf_adapter = next_adapter[lan_leaf["node_id"]]
+        # adapter 2 (vtnet2/BORDER2) → Border-2 trunk
+        fw_border2_adapter = next_adapter[firewall["node_id"]]
+        border2_leaf_adapter = next_adapter[border2_leaf["node_id"]]
         gns3.create_link(
             project_id,
             firewall["node_id"],
-            fw_lan_adapter,
-            lan_leaf["node_id"],
-            lan_leaf_adapter,
+            fw_border2_adapter,
+            border2_leaf["node_id"],
+            border2_leaf_adapter,
         )
         print(
-            f" -> {firewall['name']} (Eth{fw_lan_adapter}/LAN) "
-            f"<---> {lan_leaf['name']} (Eth{lan_leaf_adapter})"
+            f" -> {firewall['name']} (Eth{fw_border2_adapter}/BORDER2) "
+            f"<---> {border2_leaf['name']} (Eth{border2_leaf_adapter})"
         )
         next_adapter[firewall["node_id"]] += 1
-        next_adapter[lan_leaf["node_id"]] += 1
+        next_adapter[border2_leaf["node_id"]] += 1
 
-        # adapter 3 (DMZ) -> DMZ leaf inside EVPN fabric
-        fw_dmz_adapter = next_adapter[firewall["node_id"]]
-        dmz_leaf_adapter = next_adapter[dmz_leaf["node_id"]]
+        # adapter 3 (vtnet3/BORDER1) → Border-1 trunk
+        fw_border1_adapter = next_adapter[firewall["node_id"]]
+        border1_leaf_adapter = next_adapter[border1_leaf["node_id"]]
         gns3.create_link(
             project_id,
             firewall["node_id"],
-            fw_dmz_adapter,
-            dmz_leaf["node_id"],
-            dmz_leaf_adapter,
+            fw_border1_adapter,
+            border1_leaf["node_id"],
+            border1_leaf_adapter,
         )
         print(
-            f" -> {firewall['name']} (Eth{fw_dmz_adapter}/DMZ) "
-            f"<---> {dmz_leaf['name']} (Eth{dmz_leaf_adapter})"
+            f" -> {firewall['name']} (Eth{fw_border1_adapter}/BORDER1) "
+            f"<---> {border1_leaf['name']} (Eth{border1_leaf_adapter})"
         )
         next_adapter[firewall["node_id"]] += 1
-        next_adapter[dmz_leaf["node_id"]] += 1
+        next_adapter[border1_leaf["node_id"]] += 1
 
     # ==========================================
     # 8. Wire management network
