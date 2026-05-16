@@ -16,3 +16,6 @@ env/
 *.bin
 
 password.txt
+
+.continue
+.keys.*

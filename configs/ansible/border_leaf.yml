@@ -15,6 +15,7 @@
     - name: Set parent interface to routed mode (no switchport)
       arista.eos.eos_config:
         lines:
+          - "no channel-group"
           - "no switchport"
           - "no shutdown"
         parents: "interface {{ item }}"
@@ -71,6 +72,16 @@
           - "router bgp {{ bgp_asn }}"
           - "vrf {{ item.vrf }}"
           - "address-family ipv4"
+      loop: "{{ external_handoffs }}"
+
+    - name: Originate default route toward external peer for selected VRFs
+      arista.eos.eos_config:
+        lines:
+          - "neighbor {{ item.peer_ip }} default-originate"
+        parents:
+          - "router bgp {{ bgp_asn }}"
+          - "vrf {{ item.vrf }}"
+      when: item.originate_default_route | default(false)
       loop: "{{ external_handoffs }}"
 
     # ------------------------------------------------------------------

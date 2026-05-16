@@ -31,6 +31,7 @@ from sots.config import (
     MLAG_TRUNK_GROUP,
     MLAG_PEER_IP_SUBNET,
     MLAG_RELOAD_DELAY_MLAG,
+    ENABLE_DMZ_FIREWALL,
 )
 from sots.vlans import VLANS, TENANTS
 
@@ -79,7 +80,7 @@ for i in range(NUM_SPINES):
         spine_iface = f"Ethernet{j + 1}"
         leaf_iface = f"Ethernet{i + 1}"
 
-        peer_leaf_name = "Border-1" if j == 0 else f"Leaf-{j + 1}"
+        peer_leaf_name = f"Leaf-{j + 1}"
 
         spine_fabric[i].append(
             {
@@ -106,21 +107,30 @@ for i in range(NUM_SPINES):
 # Each tenant that has "external_handoff: true" gets an entry.
 # The interface, IPs and peer ASN come from config.py constants
 # (BORDER_HANDOFFS) — see config.py for how to add new ones.
-def build_external_handoffs(tenants):
+def build_external_handoffs(tenants, border_number):
     handoffs = []
     for t in tenants:
         if not t.get("external_handoff"):
+            continue
+        if border_number == 1:
+            local_ip = t["handoff_local_ip"]
+            peer_ip = t["handoff_peer_ip"]
+        else:
+            local_ip = t.get("handoff_local_ip_2")
+            peer_ip = t.get("handoff_peer_ip_2")
+        if not local_ip or not peer_ip:
             continue
         handoffs.append(
             {
                 "vrf": t["name"],
                 "l3_vni": t["l3_vni"],
+                "originate_default_route": t.get("originate_default_route", False),
                 "interface": t["handoff_interface"],
                 "vlan": t[
                     "handoff_vlan"
                 ],  # 802.1Q tag — was missing, causing item.vlan error
-                "local_ip": t["handoff_local_ip"],
-                "peer_ip": t["handoff_peer_ip"],
+                "local_ip": local_ip,
+                "peer_ip": peer_ip,
                 "peer_asn": t["handoff_peer_asn"],
             }
         )
@@ -128,8 +138,10 @@ def build_external_handoffs(tenants):
 
 
 def leaf_name_from_index(leaf_index):
-    if leaf_index == 1:
+    if leaf_index == _border_left_idx:
         return "Border-1"
+    if leaf_index == _border_right_idx:
+        return "Border-2"
     return f"Leaf-{leaf_index}"
 
 
@@ -159,14 +171,55 @@ def parse_pair(pair, pair_number):
     return first, second
 
 
+_border_left_idx, _border_right_idx = parse_pair(MLAG_PAIRS[0], 1)
+
+
+def ethernet_to_adapter(interface_name):
+    if not isinstance(interface_name, str) or not interface_name.startswith("Ethernet"):
+        return None
+    suffix = interface_name[len("Ethernet") :]
+    return int(suffix) if suffix.isdigit() else None
+
+
+def build_reserved_mlag_adapters():
+    reserved = {}
+    if not ENABLE_DMZ_FIREWALL:
+        return reserved
+
+    handoff_adapters = set()
+    for tenant in TENANTS:
+        if not tenant.get("external_handoff"):
+            continue
+        adapter = ethernet_to_adapter(tenant.get("handoff_interface"))
+        if adapter is not None:
+            handoff_adapters.add(adapter)
+
+    if not handoff_adapters:
+        return reserved
+
+    reserved[_border_left_idx] = set(handoff_adapters)
+    reserved[_border_right_idx] = set(handoff_adapters)
+    return reserved
+
+
+def next_mlag_member_interface(leaf_index, next_adapter_by_leaf, reserved_adapters):
+    current = next_adapter_by_leaf[leaf_index - 1]
+    reserved_for_leaf = reserved_adapters.get(leaf_index, set())
+    while current in reserved_for_leaf:
+        current += 1
+    next_adapter_by_leaf[leaf_index - 1] = current + 1
+    return f"Ethernet{current}"
+
+
 def build_server_interface_plan():
     server_interfaces_by_leaf = [[] for _ in range(NUM_LEAVES)]
     # Leaf-spine links consume Ethernet1..EthernetNUM_SPINES.
     next_adapter_by_leaf = [NUM_SPINES + 1 for _ in range(NUM_LEAVES)]
 
     # Match deploy_fabric.py server placement (round-robin across leaves).
-    for server_index in range(NUM_SERVERS):
-        leaf_index = server_index % NUM_LEAVES
+    start_index = 1 if ENABLE_DMZ_FIREWALL else 0
+    for server_index in range(start_index, NUM_SERVERS):
+        leaf_index = (server_index - start_index) % NUM_LEAVES
         server_interfaces_by_leaf[leaf_index].append(
             f"Ethernet{next_adapter_by_leaf[leaf_index]}"
         )
@@ -182,6 +235,7 @@ def allocate_mlag_peer_link_members(next_adapter_by_leaf):
     pair_details = []
     members_by_leaf = {}
     paired_leaf_names = set()
+    reserved_adapters = build_reserved_mlag_adapters()
 
     for pair_number, pair in enumerate(MLAG_PAIRS, start=1):
         left_idx, right_idx = parse_pair(pair, pair_number)
@@ -208,10 +262,16 @@ def allocate_mlag_peer_link_members(next_adapter_by_leaf):
         left_members = []
         right_members = []
         for _ in range(MLAG_PEER_LINK_MEMBER_COUNT):
-            left_members.append(f"Ethernet{next_adapter_by_leaf[left_idx - 1]}")
-            right_members.append(f"Ethernet{next_adapter_by_leaf[right_idx - 1]}")
-            next_adapter_by_leaf[left_idx - 1] += 1
-            next_adapter_by_leaf[right_idx - 1] += 1
+            left_members.append(
+                next_mlag_member_interface(
+                    left_idx, next_adapter_by_leaf, reserved_adapters
+                )
+            )
+            right_members.append(
+                next_mlag_member_interface(
+                    right_idx, next_adapter_by_leaf, reserved_adapters
+                )
+            )
 
         members_by_leaf[left_name] = left_members
         members_by_leaf[right_name] = right_members
@@ -287,8 +347,11 @@ for i in range(NUM_SPINES):
 
 # Build Leaves (Border & Compute)
 for j in range(NUM_LEAVES):
-    is_border = j == 0
-    name = "Border-1" if is_border else f"Leaf-{j + 1}"
+    leaf_index = j + 1
+    is_border_1 = leaf_index == _border_left_idx
+    is_border_2 = leaf_index == _border_right_idx
+    is_border = is_border_1 or is_border_2
+    name = leaf_name_from_index(leaf_index)
     mgmt_ip = f"{MGMT_BASE_IP}.{mgmt}"
     mgmt += 1
 
@@ -314,8 +377,9 @@ for j in range(NUM_LEAVES):
     )
 
     if is_border:
-        # Derived from TENANTS — no hardcoded vrf names or l3_vnis here
-        vars_["external_handoffs"] = build_external_handoffs(TENANTS)
+        vars_["external_handoffs"] = build_external_handoffs(
+            TENANTS, 1 if is_border_1 else 2
+        )
         inventory["border_leaves"]["hosts"].append(name)
     else:
         inventory["compute_leaves"]["hosts"].append(name)
