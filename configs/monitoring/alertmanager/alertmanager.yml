@@ -1,0 +1,51 @@
+global:
+  resolve_timeout: 5m
+
+# ── Routing tree ──────────────────────────────────────────────────────────────
+route:
+  receiver: default
+  group_by: [alertname, switch, host, severity]
+  group_wait:      30s
+  group_interval:  5m
+  repeat_interval: 1h
+
+  routes:
+    # Critical alerts fire immediately with no grouping delay
+    - match:
+        severity: critical
+      receiver: default
+      group_wait: 10s
+      repeat_interval: 30m
+
+    # MLAG alerts are always critical — fast notification
+    - match_re:
+        alertname: "MLAG.*"
+      receiver: default
+      group_wait: 5s
+      repeat_interval: 15m
+
+# ── Receivers ─────────────────────────────────────────────────────────────────
+# Default receiver just logs to the Alertmanager UI.
+# To add email or Slack, uncomment and fill in the relevant block below.
+receivers:
+  - name: default
+    # ── Email (optional) ────────────────────────────────────────────────────
+    # email_configs:
+    #   - to:        admin@example.com
+    #     from:      alertmanager@example.com
+    #     smarthost: smtp.example.com:587
+    #     auth_username: alertmanager@example.com
+    #     auth_password: <password>
+    #     send_resolved: true
+
+    # ── Slack (optional) ────────────────────────────────────────────────────
+    # slack_configs:
+    #   - api_url:  https://hooks.slack.com/services/XXX/YYY/ZZZ
+    #     channel:  '#dc-alerts'
+    #     send_resolved: true
+    #     title: '{{ .GroupLabels.alertname }}'
+    #     text: >
+    #       {{ range .Alerts }}
+    #       *Alert:* {{ .Annotations.summary }}
+    #       *Details:* {{ .Annotations.description }}
+    #       {{ end }}

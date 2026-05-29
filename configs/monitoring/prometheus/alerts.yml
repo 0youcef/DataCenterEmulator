@@ -1,0 +1,225 @@
+groups:
+
+  # ── Switch reachability ─────────────────────────────────────────────────────
+  - name: switch_reachability
+    rules:
+      - alert: SwitchDown
+        expr: eos_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Switch {{ $labels.switch }} eAPI unreachable"
+          description: >
+            The eAPI on {{ $labels.switch }} has been unreachable for over 1 minute.
+            Check GNS3 node status and management connectivity.
+
+  # ── Underlay BGP (VRF default) ──────────────────────────────────────────────
+  - name: underlay_bgp
+    rules:
+      - alert: UnderlayBGPSessionDown
+        expr: eos_bgp_session_up{vrf="default"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Underlay BGP down: {{ $labels.switch }} → {{ $labels.neighbor }}"
+          description: >
+            BGP session in VRF default between {{ $labels.switch }} and
+            {{ $labels.neighbor }} (AS {{ $labels.peer_asn }}) has been down for
+            over 2 minutes. This reduces fabric redundancy.
+
+      - alert: UnderlayBGPPrefixCountLow
+        expr: >
+          eos_bgp_prefixes_received{vrf="default"}
+          < on(switch) group_left
+            count(eos_bgp_session_up{vrf="default"} == 1) by (switch) * 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low prefix count on {{ $labels.switch }} from {{ $labels.neighbor }}"
+          description: >
+            Fewer underlay prefixes than expected. A loopback or P2P route may
+            have been withdrawn.
+
+  # ── EVPN overlay ────────────────────────────────────────────────────────────
+  - name: evpn_overlay
+    rules:
+      - alert: EVPNSessionDown
+        expr: eos_evpn_session_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "EVPN session down: {{ $labels.switch }} → {{ $labels.neighbor }}"
+          description: >
+            EVPN (L2VPN) BGP session between {{ $labels.switch }} and
+            {{ $labels.neighbor }} is not Established. VXLAN tunnels to/from
+            this switch will not form and MAC/IP mobility will stop.
+
+      - alert: EVPNRoutesDropped
+        expr: >
+          (
+            eos_evpn_routes_received
+            < (eos_evpn_routes_received offset 10m) * 0.8
+          ) and eos_evpn_routes_received offset 10m > 0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "EVPN route count dropped >20% on {{ $labels.switch }}"
+          description: >
+            EVPN routes received from {{ $labels.neighbor }} dropped by more than
+            20% in the last 10 minutes. VMs may have lost network reachability.
+
+  # ── MLAG ───────────────────────────────────────────────────────────────────
+  - name: mlag
+    rules:
+      - alert: MLAGNotActive
+        expr: eos_mlag_active == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MLAG domain not active on {{ $labels.switch }}"
+          description: >
+            The MLAG domain on {{ $labels.switch }} is not in active state.
+            Dual-homed servers connected to this pair may lose redundancy.
+
+      - alert: MLAGPeerLinkDown
+        expr: eos_mlag_peer_link_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MLAG peer-link down on {{ $labels.switch }}"
+          description: >
+            The MLAG peer-link Port-Channel on {{ $labels.switch }} is down.
+            This is the highest severity MLAG failure — all traffic from one
+            leaf in the pair may be blackholed.
+
+      - alert: MLAGPeerUnreachable
+        expr: eos_mlag_peer_alive == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MLAG peer unreachable from {{ $labels.switch }}"
+          description: >
+            {{ $labels.switch }} cannot reach its MLAG peer. The keepalive
+            link (Vlan4094) may be down.
+
+  # ── VRF BGP (external handoffs) ─────────────────────────────────────────────
+  - name: vrf_bgp
+    rules:
+      - alert: ExternalHandoffBGPDown
+        expr: >
+          eos_bgp_session_up{vrf=~"VRF_PEDAGOGY|VRF_RESEARCH|VRF_DMZ"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: >
+            External handoff BGP down: {{ $labels.switch }}
+            VRF {{ $labels.vrf }} → {{ $labels.neighbor }}
+          description: >
+            The BGP session in {{ $labels.vrf }} between {{ $labels.switch }}
+            and {{ $labels.neighbor }} (OPNsense/FRR) is not Established.
+            Internet and DMZ reachability from this VRF is broken.
+
+      - alert: ExternalHandoffNoPrefixes
+        expr: >
+          eos_bgp_session_up{vrf=~"VRF_PEDAGOGY|VRF_RESEARCH|VRF_DMZ"} == 1
+          and eos_bgp_prefixes_received{vrf=~"VRF_PEDAGOGY|VRF_RESEARCH|VRF_DMZ"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: >
+            External session Established but 0 prefixes: {{ $labels.switch }}
+            {{ $labels.vrf }}
+          description: >
+            The BGP session is up but no prefixes are being received.
+            OPNsense or FRR may not be advertising routes.
+            Check: vtysh -c 'show bgp summary' on OPNsense and FRR.
+
+  # ── Interfaces ──────────────────────────────────────────────────────────────
+  - name: interfaces
+    rules:
+      - alert: FabricInterfaceDown
+        expr: >
+          eos_interface_up{interface=~"Ethernet[1-9].*"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: >
+            Fabric interface down: {{ $labels.switch }}/{{ $labels.interface }}
+          description: >
+            Ethernet interface {{ $labels.interface }} on {{ $labels.switch }}
+            has been down for 2 minutes. Check GNS3 link and remote node status.
+
+      - alert: HighInterfaceErrorRate
+        expr: >
+          rate(eos_interface_in_errors_total[5m]) > 10
+          or rate(eos_interface_out_errors_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: >
+            High error rate on {{ $labels.switch }}/{{ $labels.interface }}
+          description: >
+            Interface {{ $labels.interface }} on {{ $labels.switch }} is seeing
+            more than 10 errors/second. This may indicate a duplex mismatch or
+            a bad virtual link in GNS3.
+
+  # ── Linux servers (node_exporter) ───────────────────────────────────────────
+  - name: servers
+    rules:
+      - alert: ServerDown
+        expr: up{job=~"node_.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Server {{ $labels.host }} is down"
+          description: >
+            node_exporter on {{ $labels.host }} is unreachable. The VM may have
+            crashed or lost management connectivity.
+
+      - alert: ServerHighCPU
+        expr: >
+          100 - (avg by(host) (
+            rate(node_cpu_seconds_total{mode="idle",job=~"node_.*"}[5m])
+          ) * 100) > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU on {{ $labels.host }}"
+          description: "CPU usage on {{ $labels.host }} has been above 90% for 10 minutes."
+
+      - alert: ServerLowMemory
+        expr: >
+          (node_memory_MemAvailable_bytes{job=~"node_.*"}
+           / node_memory_MemTotal_bytes{job=~"node_.*"}) * 100 < 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low memory on {{ $labels.host }}"
+          description: "Less than 10% free RAM on {{ $labels.host }}."
+
+      - alert: ServerDiskAlmostFull
+        expr: >
+          (1 - (node_filesystem_avail_bytes{job=~"node_.*",fstype!="tmpfs"}
+                / node_filesystem_size_bytes{job=~"node_.*",fstype!="tmpfs"})
+          ) * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk almost full on {{ $labels.host }}/{{ $labels.mountpoint }}"
+          description: "Filesystem {{ $labels.mountpoint }} is over 85% full."

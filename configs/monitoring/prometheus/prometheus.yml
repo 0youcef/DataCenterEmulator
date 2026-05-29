@@ -1,0 +1,116 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+alerting:
+  alertmanagers:
+  - static_configs:
+    - targets:
+      - alertmanager:9093
+rule_files:
+- /etc/prometheus/alerts.yml
+scrape_configs:
+- job_name: eos_spine_1
+  metrics_path: /metrics
+  params:
+    target:
+    - 172.20.20.10
+  static_configs:
+  - targets:
+    - host.docker.internal:9101
+    labels:
+      switch: Spine-1
+- job_name: eos_spine_2
+  metrics_path: /metrics
+  params:
+    target:
+    - 172.20.20.11
+  static_configs:
+  - targets:
+    - host.docker.internal:9101
+    labels:
+      switch: Spine-2
+- job_name: eos_border_1
+  metrics_path: /metrics
+  params:
+    target:
+    - 172.20.20.12
+  static_configs:
+  - targets:
+    - host.docker.internal:9101
+    labels:
+      switch: Border-1
+- job_name: eos_border_2
+  metrics_path: /metrics
+  params:
+    target:
+    - 172.20.20.13
+  static_configs:
+  - targets:
+    - host.docker.internal:9101
+    labels:
+      switch: Border-2
+- job_name: eos_leaf_3
+  metrics_path: /metrics
+  params:
+    target:
+    - 172.20.20.14
+  static_configs:
+  - targets:
+    - host.docker.internal:9101
+    labels:
+      switch: Leaf-3
+- job_name: eos_leaf_4
+  metrics_path: /metrics
+  params:
+    target:
+    - 172.20.20.15
+  static_configs:
+  - targets:
+    - host.docker.internal:9101
+    labels:
+      switch: Leaf-4
+- job_name: eos_leaf_5
+  metrics_path: /metrics
+  params:
+    target:
+    - 172.20.20.16
+  static_configs:
+  - targets:
+    - host.docker.internal:9101
+    labels:
+      switch: Leaf-5
+- job_name: eos_leaf_6
+  metrics_path: /metrics
+  params:
+    target:
+    - 172.20.20.17
+  static_configs:
+  - targets:
+    - host.docker.internal:9101
+    labels:
+      switch: Leaf-6
+- job_name: eos_leaf_7
+  metrics_path: /metrics
+  params:
+    target:
+    - 172.20.20.18
+  static_configs:
+  - targets:
+    - host.docker.internal:9101
+    labels:
+      switch: Leaf-7
+- job_name: eos_leaf_8
+  metrics_path: /metrics
+  params:
+    target:
+    - 172.20.20.19
+  static_configs:
+  - targets:
+    - host.docker.internal:9101
+    labels:
+      switch: Leaf-8
+- job_name: prometheus
+  static_configs:
+  - targets:
+    - localhost:9090
