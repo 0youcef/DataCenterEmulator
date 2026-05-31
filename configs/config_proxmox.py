@@ -120,7 +120,6 @@ def configure_server(node_name, ip):
             net_connect.write_channel(password + "\n")
             time.sleep(2)
 
-
     except Exception as e:
         print(f"  [FAIL] Telnet connection failed: {e}")
         return
@@ -130,7 +129,10 @@ def configure_server(node_name, ip):
     # Use 2>/dev/null || true so re-runs don't fail if already set.
     # ----------------------------------------------------------------
     cmds = [
-        # Bring the interface up first — required before assigning IP
+        # Create the vmbr0 bridge immediately for the current session
+        f"ip link add name vmbr0 type bridge 2>/dev/null || true",
+        f"ip link set dev vmbr0 up",
+        # Bring the physical management interface up first — required before assigning IP
         f"ip link set {SERVER_IFACE} up",
         # Flush any existing IPs so re-runs are idempotent
         f"ip addr flush dev {SERVER_IFACE} 2>/dev/null || true",
@@ -149,10 +151,15 @@ def configure_server(node_name, ip):
         f"auto {SERVER_IFACE}\\n"
         f"iface {SERVER_IFACE} inet static\\n"
         f"    address {ip}/{MGMT_NETMASK}\\n"
-        f"    gateway {MGMT_GATEWAY}\\n"
+        f"    gateway {MGMT_GATEWAY}\\n\\n"
+        f"auto vmbr0\\n"
+        f"iface vmbr0 inet manual\\n"
+        f"    bridge-ports none\\n"
+        f"    bridge-stp off\\n"
+        f"    bridge-fd 0\\n"
     )
     cmds.append(
-        f"grep -q 'address {ip}' /etc/network/interfaces || "
+        f"grep -q 'auto vmbr0' /etc/network/interfaces || "
         f"printf '{persistent_block}' >> /etc/network/interfaces"
     )
 
@@ -168,7 +175,7 @@ def configure_server(node_name, ip):
         print(f"\n  Console output:\n{output}")
 
     net_connect.disconnect()
-    print(f"\n  ✅ {node_name} configured with {ip}/{MGMT_NETMASK}")
+    print(f"\n  ✅ {node_name} configured with {ip}/{MGMT_NETMASK} and vmbr0 bridge")
 
 def main():
     servers = get_server_mgmt_ips()

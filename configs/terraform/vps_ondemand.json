@@ -1,0 +1,16 @@
+{
+  "vms": [
+    {
+      "vm_id": 100,
+      "name": "vm01",
+      "cpu": 2,
+      "memory_mb": 2048,
+      "disk_gb": 20,
+      "ip": "192.168.10.10/24",
+      "started": true,
+      "source": "api",
+      "ci_user": "ubuntu",
+      "created": "2026-05-31T08:38:00"
+    }
+  ]
+}

@@ -1,3 +1,4 @@
 netmiko>=4.6.0
 ansible>=13.4.0
 requests>=2.32.5
+prometheus_client

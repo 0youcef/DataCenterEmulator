@@ -19,3 +19,5 @@ password.txt
 
 .continue
 .keys.*
+
+./configs/terraform/vps_*

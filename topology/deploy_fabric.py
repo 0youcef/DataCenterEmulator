@@ -245,19 +245,18 @@ try:
                     f"{idx_name}={idx_value} is outside valid leaf range 1..{NUM_LEAVES}"
                 )
 
-    # Flat, ordered list of leaves belonging to non-border MLAG pairs.
-    # Server-2+ are round-robined across this list, so they always land
-    # on an MLAG pair (never on a standalone leaf or a border leaf).
-    compute_leaf_list = []
+    # Grouped list of compute MLAG pairs.
+    # Server-2+ are round-robined across these pairs and dual-homed to both leaves.
+    compute_mlag_pairs = []
     for _pair_num, _pair in enumerate(MLAG_PAIRS[1:], start=2):
         _l, _r = parse_mlag_pair(_pair, _pair_num)
-        compute_leaf_list.extend([leaves[_l - 1], leaves[_r - 1]])
+        compute_mlag_pairs.append((leaves[_l - 1], leaves[_r - 1]))
 
-    # if not compute_leaf_list:
-    #     raise RuntimeError(
-    #         "No compute MLAG pairs found (MLAG_PAIRS has only one entry). "
-    #         "Add at least one more pair for Proxmox servers."
-    #     )
+    if not compute_mlag_pairs:
+        raise RuntimeError(
+            "No compute MLAG pairs found (MLAG_PAIRS has only one entry). "
+            "Add at least one more pair for Proxmox servers."
+        )
 
     print("Spawning Servers...")
     leaf_server_count = {}
@@ -277,19 +276,24 @@ try:
     )
 
     # ── Server-2+: Proxmox compute nodes ──────────────────────────────
-    # Round-robined across compute_leaf_list (MLAG_PAIRS[1:]).
-    # Server-2 always lands on the first leaf of the second MLAG pair.
+    # Round-robined across compute_mlag_pairs.
     for i in range(1, NUM_SERVERS):
-        leaf = compute_leaf_list[(i - 1) % len(compute_leaf_list)]
-        leaf_x = leaf["x"]
-        count = leaf_server_count.get(leaf["node_id"], 0)
-        leaf_server_count[leaf["node_id"]] = count + 1
+        left_leaf, right_leaf = compute_mlag_pairs[(i - 1) % len(compute_mlag_pairs)]
+        
+        # Position the server exactly between the two leaves of the MLAG pair
+        server_x = (left_leaf["x"] + right_leaf["x"]) // 2
+        
+        # Track vertical spacing per MLAG pair
+        pair_id = f"{left_leaf['node_id']}_{right_leaf['node_id']}"
+        count = leaf_server_count.get(pair_id, 0)
+        leaf_server_count[pair_id] = count + 1
+        
         servers.append(
             deploy(
                 template_id_proxmox,
                 compute_ids_servers[i % len(compute_ids_servers)],
                 f"Server-{i + 1}",
-                leaf_x,
+                server_x,
                 300 + count * 150,
             )
         )
@@ -351,17 +355,27 @@ try:
             next_adapter[_frr["node_id"]] += 1
             next_adapter[_bl["node_id"]] += 1
 
-    # ── Server-2+ (Proxmox): single uplink, round-robined across ──────
-    # compute_leaf_list (MLAG_PAIRS[1:]).  Server-2 always connects to
-    # the first leaf of the second MLAG pair, matching the spawn order.
+    # ── Server-2+ (Proxmox): DUAL uplinks to both leaves in the MLAG pair ──
+    # Round-robined across compute_mlag_pairs (MLAG_PAIRS[1:]).
     for i, server in enumerate(servers[1:]):
-        leaf = compute_leaf_list[i % len(compute_leaf_list)]
-        sa = next_adapter[server["node_id"]]
-        la = next_adapter[leaf["node_id"]]
-        gns3.create_link(project_id, server["node_id"], sa, leaf["node_id"], la)
-        print(f" -> {server['name']} (Eth{sa}) <---> {leaf['name']} (Eth{la})")
+        left_leaf, right_leaf = compute_mlag_pairs[i % len(compute_mlag_pairs)]
+        
+        # 1. Link to the Left Leaf
+        sa_left = next_adapter[server["node_id"]]
+        la_left = next_adapter[left_leaf["node_id"]]
+        gns3.create_link(project_id, server["node_id"], sa_left, left_leaf["node_id"], la_left)
+        print(f" -> {server['name']} (Eth{sa_left}) <---> {left_leaf['name']} (Eth{la_left})")
         next_adapter[server["node_id"]] += 1
-        next_adapter[leaf["node_id"]] += 1
+        next_adapter[left_leaf["node_id"]] += 1
+
+        # 2. Link to the Right Leaf
+        sa_right = next_adapter[server["node_id"]]
+        la_right = next_adapter[right_leaf["node_id"]]
+        gns3.create_link(project_id, server["node_id"], sa_right, right_leaf["node_id"], la_right)
+        print(f" -> {server['name']} (Eth{sa_right}) <---> {right_leaf['name']} (Eth{la_right})")
+        next_adapter[server["node_id"]] += 1
+        next_adapter[right_leaf["node_id"]] += 1
+
 
     # ==========================================
     # 7. Wire MLAG peer links
