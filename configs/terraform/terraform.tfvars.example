@@ -1,0 +1,27 @@
+# Proxmox connection
+proxmox_endpoint    = "https://pve.example.com:8006/"
+proxmox_insecure    = true
+proxmox_username    = "root@pam"
+proxmox_password    = "changeme"
+proxmox_node_name   = "pve"
+
+# Proxmox template
+proxmox_template_vm_id = 9000
+proxmox_datastore_id = "local-lvm"
+proxmox_bridge      = "vmbr0"
+
+# VM settings
+vm_tags             = ["vps", "terraform"]
+vm_started          = true
+vm_on_boot          = true
+vm_full_clone       = true
+vm_cpu_cores        = 2
+vm_cpu_sockets      = 1
+vm_cpu_type         = "x86-64-v2-AES"
+vm_memory_mb        = 2048
+vm_disk_interface   = "scsi0"
+vm_disk_size_gb     = 20
+vm_disk_iothread    = true
+vm_network_model    = "virtio"
+vm_ipv4_address     = "dhcp"
+vm_qemu_agent_enabled = true
