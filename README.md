@@ -19,6 +19,7 @@ All settings live in a **Single Source of Truth (SSOT)** — edit two Python fil
 - [Adding Nodes to a Running Topology](#adding-nodes-to-a-running-topology)
 - [Optional: Provisioning VPS Compute with Terraform](#optional-provisioning-vps-compute-with-terraform)
 - [Optional: Monitoring Stack (Prometheus + Grafana)](#optional-monitoring-stack-prometheus--grafana)
+- [Creating GNS3 QEMU Templates](#creating-gns3-qemu-templates)
 - [GNS3 API Reference](#gns3-api-reference)
 - [File Structure](#file-structure)
 - [Troubleshooting](#troubleshooting)
@@ -84,7 +85,7 @@ The fabric supports multiple tenant **VRFs** (virtual routing and forwarding) wi
 
 ### System Requirements
 
-- Linux host with **GNS3 2.x+** (server + QEMU support)
+- Linux host with **GNS3 3.x+** (server + QEMU support)
 - **Python 3.10+**
 - **Ansible 13+** (with the Arista EOS collection)
 - 16 GB+ RAM recommended (each vEOS ≈ 512 MB, Proxmox ≈ 2 GB, OPNsense ≈ 1 GB)
@@ -95,6 +96,8 @@ The fabric supports multiple tenant **VRFs** (virtual routing and forwarding) wi
 ### Required GNS3 Templates / Images
 
 Import these QEMU appliances into GNS3 **before** deploying anything. Names must match exactly (or be updated in `sots/config.py`):
+
+For the import and template-creation procedure, see [Creating GNS3 QEMU Templates](#creating-gns3-qemu-templates).
 
 | Template Name   | Suggested Image      | Purpose                           |
 | --------------- | -------------------- | --------------------------------- |
@@ -122,7 +125,7 @@ pip install -r requirements.txt
 # 4. Install the Arista Ansible collection
 ansible-galaxy collection install arista.eos
 
-# 5. Install the GNS3 server (example: Arch Linux)
+# 5. Install the GNS3 3.x+  server (example: Arch Linux)
 sudo pacman -S gns3-server mtools
 # Debian/Ubuntu: follow https://docs.gns3.com/docs/getting-started/installation/linux
 
@@ -313,6 +316,8 @@ ansible-playbook -i inventory.py border_leaf.yml
 
 Once the topology has been deployed once (step 1) and node templates/images are confirmed working, you can re-run the full configuration pipeline in one command:
 
+See [Creating GNS3 QEMU Templates](#creating-gns3-qemu-templates) if the required templates still need to be created or verified.
+
 ```bash
 bash launch.sh
 ```
@@ -388,6 +393,33 @@ docker compose up -d
 - EOS exporter metrics: `http://localhost:9101/metrics?target=<switch-mgmt-ip>`
 
 Metrics exposed include BGP session state, EVPN session state/route counts, MLAG status, and per-interface counters/errors — see the docstring in `configs/monitoring/eos_exporter.py` for the full metric list. Point `configs/monitoring/prometheus/prometheus.yml` at your switches' management IPs before starting the stack.
+
+---
+
+## Creating GNS3 QEMU Templates
+
+Create the required QEMU templates before deploying the topology. The template names below are the defaults defined in `sots/config.py`; if you use different names, update that file to match.
+
+### 1. Import the VM Images
+
+Upload each required image to GNS3 before creating its template:
+
+1. Open **GNS3 → Image Manager**.
+2. Select **Add Image**.
+3. Choose the image file and upload it.
+
+### 2. Create the QEMU Templates
+
+After importing an image, open **GNS3 → Template Preferences → QEMU**, select **Add New QEMU VM Template**, and choose to run the VM locally. Create one template for each row below, using the exact template name and the imported disk image.
+
+| Template name | Disk image | Suggested configuration |
+| --- | --- | --- |
+| `Arista-vEOS` | `vEOS-lab-4.35.2F.qcow2` | RAM: 2048 MB; CPUs: 2; adapters: 12; adapter type: Paravirtualized Network I/O (`virtio-net-pci`); console: Telnet; CD-ROM: `Aboot-veos-8.0.2.iso` |
+| `Debian Server` | `debian-13-nocloud-amd64.qcow2` | RAM: 4096 MB; CPUs: 1; adapters: 4; adapter type: Paravirtualized Network I/O (`virtio-net-pci`); console: Telnet |
+| `Proxmox VE` | `proxmox.qcow2` | RAM: 12288 MB; CPUs: 4; adapters: 4; adapter type: Paravirtualized Network I/O (`virtio-net-pci`); console: Telnet |
+| `OPNsense` | `opnsense-24.x.qcow2` | RAM: 2048 MB; CPUs: 1; adapters: 4; adapter type: Paravirtualized Network I/O (`virtio-net-pci`); console: Telnet |
+
+After creating the templates, confirm that each template appears in GNS3 with the exact name shown above. You can then continue with [Step-by-Step Usage Guide](#step-by-step-usage-guide).
 
 ---
 
